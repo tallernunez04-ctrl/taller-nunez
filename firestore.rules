@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{db}/documents {
+    function email() { return request.auth.token.email; }
+    function existeUsuario() {
+      return request.auth != null && exists(/databases/$(db)/documents/usuarios/$(email()));
+    }
+    function usuario() {
+      return get(/databases/$(db)/documents/usuarios/$(email())).data;
+    }
+    function activo() { return existeUsuario() && usuario().activo == true; }
+    function rol() { return usuario().rol; }
+
+    match /usuarios/{correo} {
+      // el propio doc (necesario para el allowlist) o admin (pantalla Usuarios)
+      allow read: if request.auth != null && (email() == correo || (activo() && rol() == 'admin'));
+      allow write: if activo() && rol() == 'admin';
+    }
+
+    match /workOrders/{id} {
+      allow create: if activo() && (rol() == 'admin'
+        || (rol() == 'taller' && request.resource.data.creadoPor == email()));
+      allow update: if activo() && (rol() == 'admin'
+        || (rol() == 'taller' && resource.data.creadoPor == email()
+            && resource.data.estatus == 'en_proceso'));
+      allow read: if activo() && (rol() in ['compras', 'admin']
+        || (rol() == 'taller' && resource.data.creadoPor == email()));
+    }
+
+    match /compras/{id} {
+      allow read, write: if activo() && rol() in ['compras', 'admin'];
+    }
+
+    match /unidades/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() in ['compras', 'admin'];
+    }
+
+    match /config/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() == 'admin';
+      // taller necesita incrementar ultimoWO (transacción de numeración), nada más
+      allow update: if activo() && rol() == 'taller'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoWO']);
+    }
+  }
+}
