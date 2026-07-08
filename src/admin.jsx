@@ -562,7 +562,8 @@ function Usuarios() {
   const [editando, setEditando] = useState(null) // doc usuario | 'nuevo' | null
 
   useEffect(() => onSnapshot(collection(db, 'usuarios'),
-    (s) => setUsuarios(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
+    (s) => setUsuarios(s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((u) => u.oculto !== true)),
+    console.error), [])
 
   if (editando) {
     return <UsuarioForm existente={editando === 'nuevo' ? null : editando} onDone={() => setEditando(null)} />
