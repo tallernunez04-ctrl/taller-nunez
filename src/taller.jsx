@@ -90,7 +90,7 @@ function WOForm({ usuario, wo, onDone }) {
   const sucio = JSON.stringify(f) !== original
 
   useEffect(() => {
-    getDocs(query(collection(db, 'unidades'), where('activa', '==', true)))
+    getDocs(collection(db, 'unidades'))
       .then((s) => setUnidades(
         s.docs.map((d) => ({ id: d.id, ...d.data() }))
           .sort((a, b) => a.numero.localeCompare(b.numero, undefined, { numeric: true })),

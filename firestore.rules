@@ -34,6 +34,72 @@ service cloud.firestore {
     match /unidades/{id} {
       allow read: if activo();
       allow write: if activo() && rol() in ['compras', 'admin'];
+      // chofer solo actualiza lectura y rendimientos (transacción de carga de diésel)
+      allow update: if activo() && rol() == 'chofer'
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['ultimaLectura', 'ultimosRendimientos', 'rendimientoPromedio']);
+    }
+
+    match /cargasDiesel/{id} {
+      allow create: if activo() && (rol() == 'admin'
+        || (rol() == 'chofer' && request.resource.data.operadorEmail == email()));
+      allow read: if activo() && (rol() in ['taller', 'compras', 'admin']
+        || (rol() == 'chofer' && resource.data.operadorEmail == email()));
+    }
+
+    match /reportesFalla/{id} {
+      allow create: if activo() && request.resource.data.operadorEmail == email();
+      allow read: if activo() && (rol() in ['taller', 'compras', 'admin']
+        || resource.data.operadorEmail == email());
+      // taller/admin marcan atendido
+      allow update: if activo() && rol() in ['taller', 'admin'];
+    }
+
+    match /operadores/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() == 'admin';
+    }
+
+    match /clientes/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() == 'admin';
+      match /direcciones/{dirId} {
+        allow read: if activo();
+        allow write: if activo() && rol() == 'admin';
+      }
+    }
+
+    match /proveedores/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() in ['compras', 'admin'];
+    }
+
+    match /tabuladores/{id} {
+      allow read: if activo();
+      allow write: if activo() && rol() == 'admin';
+    }
+
+    match /viajes/{id} {
+      allow write: if activo() && rol() == 'admin';
+      allow read: if activo() && (rol() in ['compras', 'admin']
+        || resource.data.operadorEmail == email());
+    }
+
+    match /empleados/{id} {
+      allow read, write: if activo() && rol() == 'admin';
+    }
+
+    match /nominas/{id} {
+      allow read, write: if activo() && rol() == 'admin';
+      match /detalles/{detalleId} {
+        allow read, write: if activo() && rol() == 'admin';
+      }
+    }
+
+    // totales consolidados por mes (dashboard de conciliación)
+    match /balances/{mes} {
+      allow read: if activo() && rol() == 'admin';
+      allow write: if activo() && rol() in ['compras', 'admin'];
     }
 
     match /config/{id} {
@@ -42,6 +108,9 @@ service cloud.firestore {
       // taller necesita incrementar ultimoWO (transacción de numeración), nada más
       allow update: if activo() && rol() == 'taller'
         && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoWO']);
+      // compras solo incrementa el folio de PO
+      allow update: if activo() && rol() == 'compras'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoPO']);
     }
   }
 }

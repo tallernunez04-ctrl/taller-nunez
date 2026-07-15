@@ -1,15 +1,12 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   collection, doc, getDoc, onSnapshot, orderBy, query,
   setDoc, updateDoc, where,
 } from 'firebase/firestore'
-import { BarController, BarElement, CategoryScale, Chart, Legend, LinearScale, Tooltip } from 'chart.js'
 import * as XLSX from 'xlsx'
 import { db } from './firebase'
-import { FALLA_LABEL, LECTURA_LABEL, TIPOS, hoy, piezasLista } from './taller'
-import { ESTATUS, METODOS, dinero, r2, useUnidades } from './compras'
-
-Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip)
+import { FALLA_LABEL, LECTURA_LABEL, hoy, piezasLista } from './taller'
+import { ESTATUS, METODOS, SelectorUnidad, dinero, r2, useUnidades } from './compras'
 
 const METODO_LABEL = Object.fromEntries(METODOS)
 const TIPO_LABEL = { truck: 'Truck', reefer: 'Reefer', plataforma: 'Plataforma', caja_seca: 'Caja seca' }
@@ -29,36 +26,6 @@ export default function Admin({ vista }) {
   if (vista === 'detalle-unidad') return <DetalleUnidad />
   if (vista === 'usuarios') return <Usuarios />
   return <Gastos />
-}
-
-/* ---------- Selector de unidad con buscador (compartido) ---------- */
-
-function SelectorUnidad({ unidades, value, onChange, placeholder }) {
-  const [busqueda, setBusqueda] = useState('')
-  const filtradas = busqueda
-    ? unidades.filter((u) => u.numero.toUpperCase().includes(busqueda.toUpperCase()))
-    : unidades
-  return (
-    <div className="campo">
-      <input
-        placeholder="Buscar unidad…"
-        value={busqueda}
-        onChange={(e) => setBusqueda(e.target.value)}
-        style={{ marginBottom: '0.4rem' }}
-      />
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{placeholder}</option>
-        {Object.entries(TIPOS).map(([tipo, label]) => {
-          const grupo = filtradas.filter((u) => u.tipo === tipo)
-          return grupo.length > 0 && (
-            <optgroup key={tipo} label={label}>
-              {grupo.map((u) => <option key={u.id} value={u.id}>{u.numero}</option>)}
-            </optgroup>
-          )
-        })}
-      </select>
-    </div>
-  )
 }
 
 /* ---------- Sección Gastos ---------- */
@@ -286,16 +253,17 @@ function Dashboard() {
   const [compras, setCompras] = useState([])
   const [wos, setWos] = useState([])
   const [tcInput, setTcInput] = useState('')
+  const [dieselInput, setDieselInput] = useState('')
   const unidades = useUnidades()
-  const canvasRef = useRef(null)
-  const chartRef = useRef(null)
 
   useEffect(() => onSnapshot(collection(db, 'compras'),
     (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
   useEffect(() => onSnapshot(collection(db, 'workOrders'),
     (s) => setWos(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
-  useEffect(() => onSnapshot(doc(db, 'config', 'general'),
-    (s) => setTcInput(String(s.data()?.tipoCambioUSD ?? '')), console.error), [])
+  useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => {
+    setTcInput(String(s.data()?.tipoCambioUSD ?? ''))
+    setDieselInput(String(s.data()?.precioDieselLitro ?? ''))
+  }, console.error), [])
 
   const comprasMes = compras.filter((c) => (c.fecha || '').startsWith(mes))
   const wosCompletadas = wos.filter((w) =>
@@ -315,37 +283,6 @@ function Dashboard() {
   const filas = Object.entries(porUnidad)
     .map(([id, p]) => ({ id, ...p, tipo: tipoDe[id] ?? 'truck' }))
     .sort((a, b) => b.total - a.total)
-
-  useEffect(() => {
-    if (!canvasRef.current) return
-    chartRef.current?.destroy()
-    const tipos = [...new Set(filas.map((x) => x.tipo))]
-    chartRef.current = new Chart(canvasRef.current, {
-      type: 'bar',
-      data: {
-        labels: filas.map((x) => x.numero),
-        datasets: tipos.map((t) => ({
-          label: TIPOS[t],
-          data: filas.map((x) => (x.tipo === t ? x.total : null)),
-          backgroundColor: COLOR_TIPO[t],
-        })),
-      },
-      options: {
-        responsive: true,
-        scales: {
-          x: { stacked: true, ticks: { color: '#6B6B6B' }, grid: { color: '#DDDDDD' } },
-          y: { stacked: true, ticks: { color: '#6B6B6B' }, grid: { color: '#DDDDDD' } },
-        },
-        plugins: {
-          legend: { labels: { color: '#1A1A1A' } },
-          tooltip: {
-            callbacks: { label: (ctx) => dinero(filas[ctx.dataIndex].total, 'USD') },
-          },
-        },
-      },
-    })
-    return () => chartRef.current?.destroy()
-  }, [JSON.stringify(filas)])
 
   const actualizarTC = async () => {
     const v = Number(tcInput)
@@ -374,10 +311,37 @@ function Dashboard() {
         <button className="btn-primario" onClick={actualizarTC}>Actualizar</button>
       </div>
 
+      <div className="tc-fila">
+        <span className="muted">Diésel $/L (MXN)</span>
+        <input type="number" step="0.01" min="0" value={dieselInput} onChange={(e) => setDieselInput(e.target.value)} />
+        <button className="btn-primario" onClick={async () => {
+          const v = Number(dieselInput)
+          if (!v || v <= 0) { alert('Precio inválido'); return }
+          try {
+            await updateDoc(doc(db, 'config', 'general'), { precioDieselLitro: v })
+          } catch (e) { alert('Error: ' + e.message) }
+        }}>Actualizar</button>
+      </div>
+
       <h3>Gasto por unidad (USD)</h3>
-      {filas.length === 0
-        ? <p className="muted vacio">Sin gastos en {mes}.</p>
-        : <canvas ref={canvasRef} />}
+      {filas.length === 0 ? (
+        <p className="muted vacio">Sin gastos en {mes}.</p>
+      ) : (
+        <div className="barras">
+          {filas.map((x) => (
+            <div key={x.id} className="barra-fila">
+              <span className="barra-label">{x.numero}</span>
+              <div className="barra-pista">
+                <div
+                  className="barra"
+                  style={{ width: `${(x.total / (filas[0].total || 1)) * 100}%`, background: COLOR_TIPO[x.tipo] }}
+                />
+              </div>
+              <span className="barra-valor">{dinero(x.total, 'USD')}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {filas.length > 0 && (
         <div className="tabla-scroll">
@@ -625,6 +589,7 @@ function UsuarioForm({ existente, onDone }) {
       </label>
       <label className="campo"><span>Rol</span>
         <select value={f.rol} onChange={(e) => setF({ ...f, rol: e.target.value })}>
+          <option value="chofer">chofer</option>
           <option value="taller">taller</option>
           <option value="compras">compras</option>
           <option value="admin">admin</option>

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  addDoc, collection, doc, getDoc, onSnapshot, orderBy, query,
+  collection, doc, getDoc, increment, onSnapshot, orderBy, query, runTransaction,
   serverTimestamp, setDoc, updateDoc, where,
 } from 'firebase/firestore'
-import { db } from './firebase'
+import { db, subirArchivo } from './firebase'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, hoy, piezasLista } from './taller'
 
 export const METODOS = [
@@ -20,6 +20,29 @@ export const dinero = (n, moneda) =>
 
 // tc = pesos por 1 USD (config/general.tipoCambioUSD). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))
+
+// acumula totales del mes en /balances/{YYYY-MM} — el dashboard de conciliación
+// lee este doc consolidado en vez de recorrer miles de documentos
+// ponytail: agregación desde el cliente; migrar a Cloud Function si crece la concurrencia
+export const incBalance = (mes, campos) => setDoc(
+  doc(db, 'balances', mes),
+  Object.fromEntries(Object.entries(campos).map(([k, v]) => [k, increment(r2(v))])),
+  { merge: true },
+)
+
+// km/mi que faltan para el próximo mantenimiento (null = sin ciclo configurado)
+export const paraMantenimiento = (u) => {
+  if (!u.mantenimientoCadaX || u.ultimaLectura == null) return null
+  return (Number(u.ultimoMantenimientoKm) || 0) + Number(u.mantenimientoCadaX) - u.ultimaLectura
+}
+
+export function BadgeMantenimiento({ unidad }) {
+  const restante = paraMantenimiento(unidad)
+  if (restante === null || restante > 2000) return null
+  return restante <= 0
+    ? <span className="badge vencido">Mantenimiento vencido</span>
+    : <span className="badge alerta">Mantenimiento en {restante.toLocaleString()} {unidad.unidadLectura}</span>
+}
 
 export function useUnidades() {
   const [unidades, setUnidades] = useState([])
@@ -38,9 +61,45 @@ export function useTipoCambio() {
   return tc
 }
 
+export function useColeccion(nombre) {
+  const [docs, setDocs] = useState(null)
+  useEffect(() => onSnapshot(collection(db, nombre),
+    (s) => setDocs(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [nombre])
+  return docs
+}
+
+export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
+  const [busqueda, setBusqueda] = useState('')
+  const filtradas = busqueda
+    ? unidades.filter((u) => u.numero.toUpperCase().includes(busqueda.toUpperCase()))
+    : unidades
+  return (
+    <div className="campo">
+      <input
+        placeholder="Buscar unidad…"
+        value={busqueda}
+        onChange={(e) => setBusqueda(e.target.value)}
+        style={{ marginBottom: '0.4rem' }}
+      />
+      <select value={value} onChange={(e) => onChange(e.target.value)}>
+        <option value="">{placeholder}</option>
+        {Object.entries(TIPOS).map(([tipo, label]) => {
+          const grupo = filtradas.filter((u) => u.tipo === tipo)
+          return grupo.length > 0 && (
+            <optgroup key={tipo} label={label}>
+              {grupo.map((u) => <option key={u.id} value={u.id}>{u.numero}</option>)}
+            </optgroup>
+          )
+        })}
+      </select>
+    </div>
+  )
+}
+
 export default function Compras({ usuario, vista }) {
   if (vista === 'nueva-compra') return <CompraForm usuario={usuario} />
   if (vista === 'unidades') return <Unidades />
+  if (vista === 'cuentas-pagar') return <CuentasPorPagar />
   return <WorkOrders usuario={usuario} />
 }
 
@@ -184,10 +243,16 @@ function WODetalle({ usuario, wo, onVolver }) {
    en USD (empresa fronteriza), convirtiendo los grupos en MXN con el TC. */
 
 const conceptoVacio = () => ({ concepto: '', cantidad: 1, costoUnitario: '', tasaIVA: 16 })
-const grupoVacio = () => ({ proveedor: '', moneda: 'MXN', folioFactura: '', conceptos: [conceptoVacio()] })
+const grupoVacio = () => ({
+  proveedorId: '', moneda: 'MXN', folioFactura: '',
+  esDiesel: false, litrosFacturados: '',
+  pdf: null, xml: null,
+  conceptos: [conceptoVacio()],
+})
 const compraVacia = (wo) => ({
   unidadId: wo?.unidadId ?? '',
   unidadNumero: wo?.unidadNumero ?? '',
+  esGeneral: false,
   fecha: hoy(),
   metodoPago: 'efectivo',
   notas: '',
@@ -203,21 +268,30 @@ const calcConcepto = (c) => {
   return { concepto: c.concepto, cantidad, costoUnitario, tasaIVA, subtotal, iva, total: r2(subtotal + iva) }
 }
 
-const calcGrupo = (g, tc) => {
+const calcGrupo = (g, tc, proveedores) => {
   const conceptos = g.conceptos.map(calcConcepto)
   const subtotal = r2(conceptos.reduce((s, c) => s + c.subtotal, 0))
   const iva = r2(conceptos.reduce((s, c) => s + c.iva, 0))
   const total = r2(subtotal + iva)
+  const prov = (proveedores ?? []).find((p) => p.id === g.proveedorId)
   return {
-    proveedor: g.proveedor, moneda: g.moneda, folioFactura: g.folioFactura,
+    proveedorId: g.proveedorId,
+    proveedor: prov?.razonSocial ?? g.proveedor ?? '',
+    moneda: g.moneda, folioFactura: g.folioFactura,
     conceptos, subtotal, iva, total, totalUSD: aUSD(total, g.moneda, tc),
   }
+}
+
+const sumaDias = (fecha, dias) => {
+  const d = new Date(fecha + 'T00:00')
+  d.setDate(d.getDate() + dias)
+  return d.toLocaleDateString('sv')
 }
 
 function CompraForm({ usuario, wo, onDone }) {
   const unidades = useUnidades()
   const tc = useTipoCambio()
-  const [busqueda, setBusqueda] = useState('')
+  const proveedores = useColeccion('proveedores') ?? []
   const [f, setF] = useState(() => compraVacia(wo))
   const [guardando, setGuardando] = useState(false)
 
@@ -247,46 +321,83 @@ function CompraForm({ usuario, wo, onDone }) {
   const agregarGrupo = () => setF({ ...f, grupos: [...f.grupos, grupoVacio()] })
   const quitarGrupo = (gi) => setF({ ...f, grupos: f.grupos.filter((_, j) => j !== gi) })
 
-  const filtradas = busqueda
-    ? unidades.filter((u) => u.numero.toUpperCase().includes(busqueda.toUpperCase()))
-    : unidades
-
-  const calc = f.grupos.map((g) => calcGrupo(g, tc))
+  const calc = f.grupos.map((g) => calcGrupo(g, tc, proveedores))
   const subtotalGeneralUSD = r2(calc.reduce((s, g) => s + aUSD(g.subtotal, g.moneda, tc), 0))
   const ivaGeneralUSD = r2(calc.reduce((s, g) => s + aUSD(g.iva, g.moneda, tc), 0))
   const totalGeneralUSD = r2(calc.reduce((s, g) => s + g.totalUSD, 0))
 
   const guardar = async () => {
-    if (!f.unidadId) { alert('Selecciona una unidad'); return }
+    if (!f.esGeneral && !f.unidadId) { alert('Selecciona una unidad o marca la compra como general'); return }
     if (!tc) { alert('Cargando tipo de cambio, intenta de nuevo en un momento'); return }
+    const esCredito = f.metodoPago === 'credito_proveedor'
     const grupos = calc
-      .map((g) => ({ ...g, conceptos: g.conceptos.filter((c) => c.concepto.trim() !== '' || c.subtotal > 0) }))
-      .filter((g) => g.proveedor.trim() !== '' && g.conceptos.length > 0)
+      .map((g, gi) => ({ gi, ...g, conceptos: g.conceptos.filter((c) => c.concepto.trim() !== '' || c.subtotal > 0) }))
+      .filter((g) => g.proveedorId && g.conceptos.length > 0)
     if (grupos.length === 0) { alert('Agrega al menos un proveedor con un concepto'); return }
+    if (esCredito && grupos.some((g) => !(proveedores.find((p) => p.id === g.proveedorId)?.diasCredito > 0))) {
+      if (!confirm('Algún proveedor no tiene días de crédito configurados; el vencimiento será hoy. ¿Continuar?')) return
+    }
     setGuardando(true)
     try {
-      await addDoc(collection(db, 'compras'), {
-        woId: wo?.id ?? null,
-        woNumero: wo?.wo ?? null,
-        unidadId: f.unidadId,
-        unidadNumero: f.unidadNumero,
-        fecha: f.fecha,
-        grupos,
-        subtotalGeneralUSD: r2(grupos.reduce((s, g) => s + aUSD(g.subtotal, g.moneda, tc), 0)),
-        ivaGeneralUSD: r2(grupos.reduce((s, g) => s + aUSD(g.iva, g.moneda, tc), 0)),
-        totalGeneralUSD: r2(grupos.reduce((s, g) => s + g.totalUSD, 0)),
-        tipoCambioUsado: tc,
-        metodoPago: f.metodoPago,
-        notas: f.notas,
-        creadoPor: usuario.email,
-        createdAt: serverTimestamp(),
+      // cada proveedor genera su propio documento PO — refs pre-generadas para
+      // subir adjuntos antes de la transacción y guardar folios consecutivos dentro de ella
+      const docs = await Promise.all(grupos.map(async (g) => {
+        const ref = doc(collection(db, 'compras'))
+        const orig = f.grupos[g.gi]
+        const facturaURL = orig.pdf ? await subirArchivo(`compras/${ref.id}/factura_${orig.pdf.name}`, orig.pdf) : ''
+        const xmlURL = orig.xml ? await subirArchivo(`compras/${ref.id}/xml_${orig.xml.name}`, orig.xml) : ''
+        return { ref, g, orig, facturaURL, xmlURL }
+      }))
+      await runTransaction(db, async (tx) => {
+        const cfgRef = doc(db, 'config', 'general')
+        const cfg = await tx.get(cfgRef)
+        let n = cfg.data()?.ultimoPO ?? 0
+        for (const { ref, g, orig, facturaURL, xmlURL } of docs) {
+          n += 1
+          const prov = proveedores.find((p) => p.id === g.proveedorId)
+          const { gi: _gi, ...grupo } = g
+          tx.set(ref, {
+            poFolio: 'PO-' + String(n).padStart(4, '0'),
+            woId: wo?.id ?? null,
+            woNumero: wo?.wo ?? null,
+            unidadId: f.esGeneral ? null : f.unidadId,
+            unidadNumero: f.esGeneral ? 'General' : f.unidadNumero,
+            esGeneral: f.esGeneral,
+            fecha: f.fecha,
+            grupos: [grupo], // un grupo por doc; los docs viejos con varios grupos se siguen leyendo igual
+            subtotalGeneralUSD: aUSD(g.subtotal, g.moneda, tc),
+            ivaGeneralUSD: aUSD(g.iva, g.moneda, tc),
+            totalGeneralUSD: g.totalUSD,
+            tipoCambioUsado: tc,
+            metodoPago: f.metodoPago,
+            tipoPago: esCredito ? 'credito' : 'contado',
+            proveedorId: g.proveedorId,
+            fechaVence: esCredito ? sumaDias(f.fecha, prov?.diasCredito ?? 0) : null,
+            pagado: !esCredito, // contado queda pagado al momento
+            comprobantePagoURL: '',
+            facturaURL, xmlURL,
+            esDiesel: Boolean(orig.esDiesel),
+            litrosFacturados: orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0,
+            notas: f.notas,
+            creadoPor: usuario.email,
+            createdAt: serverTimestamp(),
+          })
+        }
+        tx.update(cfgRef, { ultimoPO: n })
+      })
+      // agregación mensual para conciliación (fuera de la transacción: increment idempotente por guardado)
+      const mes = f.fecha.slice(0, 7)
+      const totalDiesel = r2(docs.reduce((s, { g, orig }) => s + (orig.esDiesel ? g.totalUSD : 0), 0))
+      const litros = docs.reduce((s, { orig }) => s + (orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0), 0)
+      await incBalance(mes, {
+        costoCompras: r2(docs.reduce((s, { g }) => s + g.totalUSD, 0)),
+        ...(totalDiesel > 0 ? { costoDieselFacturado: totalDiesel, litrosFacturados: litros } : {}),
       })
       if (onDone) {
         onDone()
       } else {
         alert('Compra guardada')
         setF(compraVacia(null))
-        setBusqueda('')
       }
     } catch (e) {
       console.error(e)
@@ -306,29 +417,24 @@ function CompraForm({ usuario, wo, onDone }) {
           <input value={wo.unidadNumero} disabled />
         </label>
       ) : (
-        <label className="campo">
-          <span>Unidad</span>
-          <input
-            placeholder="Buscar unidad…"
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            style={{ marginBottom: '0.4rem' }}
-          />
-          <select value={f.unidadId} onChange={(e) => {
-            const u = unidades.find((x) => x.id === e.target.value)
-            setF({ ...f, unidadId: u?.id ?? '', unidadNumero: u?.numero ?? '' })
-          }}>
-            <option value="">Selecciona unidad…</option>
-            {Object.entries(TIPOS).map(([tipo, label]) => {
-              const grupo = filtradas.filter((u) => u.tipo === tipo && u.activa !== false)
-              return grupo.length > 0 && (
-                <optgroup key={tipo} label={label}>
-                  {grupo.map((u) => <option key={u.id} value={u.id}>{u.numero}</option>)}
-                </optgroup>
-              )
-            })}
-          </select>
-        </label>
+        <>
+          <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <input type="checkbox" style={{ width: 'auto' }} checked={f.esGeneral}
+              onChange={(e) => setF({ ...f, esGeneral: e.target.checked, unidadId: '', unidadNumero: '' })} />
+            <span style={{ margin: 0 }}>Compra general de empresa (sin unidad: rentas, seguros, internet…)</span>
+          </label>
+          {!f.esGeneral && (
+            <SelectorUnidad
+              unidades={unidades}
+              value={f.unidadId}
+              onChange={(id) => {
+                const u = unidades.find((x) => x.id === id)
+                setF({ ...f, unidadId: u?.id ?? '', unidadNumero: u?.numero ?? '' })
+              }}
+              placeholder="Selecciona unidad…"
+            />
+          )}
+        </>
       )}
 
       <label className="campo">
@@ -360,8 +466,15 @@ function CompraForm({ usuario, wo, onDone }) {
               >🗑</button>
             </div>
             <label className="campo">
-              <span>Proveedor</span>
-              <input value={g.proveedor} onChange={setGrupoCampo(gi, 'proveedor')} />
+              <span>Proveedor (catálogo)</span>
+              <select value={g.proveedorId} onChange={setGrupoCampo(gi, 'proveedorId')}>
+                <option value="">Selecciona proveedor…</option>
+                {proveedores.slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)).map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.razonSocial}{p.diasCredito ? ` (${p.diasCredito} días)` : ''}
+                  </option>
+                ))}
+              </select>
             </label>
             <div className="fila-2">
               <label className="campo">
@@ -374,6 +487,30 @@ function CompraForm({ usuario, wo, onDone }) {
               <label className="campo">
                 <span>Folio de factura / ticket</span>
                 <input value={g.folioFactura} onChange={setGrupoCampo(gi, 'folioFactura')} />
+              </label>
+            </div>
+            <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={g.esDiesel}
+                onChange={(e) => setF({ ...f, grupos: f.grupos.map((x, j) => (j === gi ? { ...x, esDiesel: e.target.checked } : x)) })} />
+              <span style={{ margin: 0 }}>Factura de diésel (gasolinera consolidada)</span>
+            </label>
+            {g.esDiesel && (
+              <label className="campo">
+                <span>Litros facturados (para auditoría vs. cargas de choferes)</span>
+                <input type="number" inputMode="decimal" min="0" step="0.01" value={g.litrosFacturados}
+                  onChange={setGrupoCampo(gi, 'litrosFacturados')} />
+              </label>
+            )}
+            <div className="fila-2">
+              <label className="campo">
+                <span>Factura PDF (opcional)</span>
+                <input type="file" accept=".pdf,image/*"
+                  onChange={(e) => setF({ ...f, grupos: f.grupos.map((x, j) => (j === gi ? { ...x, pdf: e.target.files[0] ?? null } : x)) })} />
+              </label>
+              <label className="campo">
+                <span>Factura XML (opcional)</span>
+                <input type="file" accept=".xml"
+                  onChange={(e) => setF({ ...f, grupos: f.grupos.map((x, j) => (j === gi ? { ...x, xml: e.target.files[0] ?? null } : x)) })} />
               </label>
             </div>
 
@@ -487,6 +624,7 @@ function Unidades() {
                 {(u.marca || u.anio || u.modelo) && (
                   <div className="muted">{[u.marca, u.anio, u.modelo].filter(Boolean).join(' ')}</div>
                 )}
+                <BadgeMantenimiento unidad={u} />
               </button>
             ))}
           </div>
@@ -498,10 +636,12 @@ function Unidades() {
 }
 
 function UnidadForm({ unidad, onDone }) {
-  const [f, setF] = useState(unidad ?? {
+  const [f, setF] = useState(() => ({
     numero: '', tipo: 'truck', unidadLectura: 'mi',
     marca: '', anio: '', modelo: '', vin: '',
-  })
+    mantenimientoCadaX: '', ultimoMantenimientoKm: '',
+    ...unidad,
+  }))
   const [guardando, setGuardando] = useState(false)
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
@@ -512,6 +652,8 @@ function UnidadForm({ unidad, onDone }) {
         await updateDoc(doc(db, 'unidades', unidad.id), {
           marca: f.marca, anio: f.anio, modelo: f.modelo, vin: f.vin,
           unidadLectura: f.unidadLectura,
+          mantenimientoCadaX: Number(f.mantenimientoCadaX) || 0,
+          ultimoMantenimientoKm: Number(f.ultimoMantenimientoKm) || 0,
         })
       } else {
         const numero = f.numero.trim().toUpperCase()
@@ -521,8 +663,10 @@ function UnidadForm({ unidad, onDone }) {
         await setDoc(ref, {
           numero, tipo: f.tipo, unidadLectura: f.unidadLectura,
           ultimaLectura: null,
+          ultimosRendimientos: [], rendimientoPromedio: null,
+          mantenimientoCadaX: Number(f.mantenimientoCadaX) || 0,
+          ultimoMantenimientoKm: Number(f.ultimoMantenimientoKm) || 0,
           marca: f.marca, anio: f.anio, modelo: f.modelo, vin: f.vin,
-          activa: true,
           createdAt: serverTimestamp(),
         })
       }
@@ -584,12 +728,142 @@ function UnidadForm({ unidad, onDone }) {
         <span>VIN / Serie</span>
         <input value={f.vin} onChange={set('vin')} />
       </label>
+      {f.tipo === 'truck' && (
+        <div className="fila-2">
+          <label className="campo">
+            <span>Mantenimiento cada ({f.unidadLectura})</span>
+            <input type="number" inputMode="numeric" min="0" value={f.mantenimientoCadaX}
+              onChange={set('mantenimientoCadaX')} placeholder="Ej. 50000" />
+          </label>
+          <label className="campo">
+            <span>Último mantenimiento en ({f.unidadLectura})</span>
+            <input type="number" inputMode="numeric" min="0" value={f.ultimoMantenimientoKm}
+              onChange={set('ultimoMantenimientoKm')} />
+          </label>
+        </div>
+      )}
       <div className="acciones">
         <button className="btn-primario" disabled={guardando} onClick={guardar}>
           {guardando ? 'Guardando…' : (unidad ? 'Guardar cambios' : 'Guardar unidad')}
         </button>
         <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
       </div>
+    </div>
+  )
+}
+
+/* ---------- Sección 4: Cuentas por Pagar ---------- */
+
+// lunes de la semana de una fecha YYYY-MM-DD (agrupa vencimientos por semana)
+const lunesDe = (fecha) => {
+  const d = new Date(fecha + 'T00:00')
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7))
+  return d.toLocaleDateString('sv')
+}
+
+function CuentasPorPagar() {
+  const [compras, setCompras] = useState(null)
+  const [pagando, setPagando] = useState(null) // compra en proceso de pago
+  const [comprobante, setComprobante] = useState(null)
+  const [guardando, setGuardando] = useState(false)
+
+  useEffect(() => onSnapshot(
+    query(collection(db, 'compras'), where('tipoPago', '==', 'credito')),
+    (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    console.error,
+  ), [])
+
+  const pendientes = (compras ?? []).filter((c) => !c.pagado)
+    .sort((a, b) => (a.fechaVence || '').localeCompare(b.fechaVence || ''))
+  const totalUSD = r2(pendientes.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
+
+  // agrupa por semana de vencimiento
+  const semanas = {}
+  pendientes.forEach((c) => {
+    const clave = c.fechaVence ? lunesDe(c.fechaVence) : 'sin-fecha'
+    ;(semanas[clave] ??= []).push(c)
+  })
+
+  const pagar = async () => {
+    setGuardando(true)
+    try {
+      const url = comprobante
+        ? await subirArchivo(`compras/${pagando.id}/pago_${comprobante.name}`, comprobante)
+        : ''
+      await updateDoc(doc(db, 'compras', pagando.id), {
+        pagado: true,
+        pagadoAt: hoy(),
+        comprobantePagoURL: url,
+      })
+      setPagando(null)
+      setComprobante(null)
+    } catch (e) {
+      console.error(e)
+      alert('Error: ' + e.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const hoyStr = hoy()
+
+  if (pagando) {
+    return (
+      <div>
+        <h2>Pagar {pagando.poFolio || 'compra'}</h2>
+        <div className="tarjeta detalle">
+          <p><span className="muted">Proveedor:</span> {(pagando.grupos ?? []).map((g) => g.proveedor).join(', ')}</p>
+          <p><span className="muted">Vence:</span> {pagando.fechaVence}</p>
+          <p><span className="muted">Monto:</span> <strong>{dinero(pagando.totalGeneralUSD, 'USD')}</strong></p>
+        </div>
+        <label className="campo"><span>Comprobante de pago</span>
+          <input type="file" accept=".pdf,image/*" onChange={(e) => setComprobante(e.target.files[0] ?? null)} />
+        </label>
+        <div className="acciones">
+          <button className="btn-completar" disabled={guardando} onClick={pagar}>
+            {guardando ? 'Guardando…' : 'Confirmar pago'}
+          </button>
+          <button className="btn-secundario" disabled={guardando} onClick={() => setPagando(null)}>Cancelar</button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <h2>Cuentas por pagar</h2>
+      <div className="kpis">
+        <div className="kpi">Facturas pendientes<strong>{pendientes.length}</strong></div>
+        <div className="kpi">Total por pagar<strong>{dinero(totalUSD, 'USD')}</strong></div>
+      </div>
+      {compras === null && <p className="muted">Cargando…</p>}
+      {compras !== null && pendientes.length === 0 && <p className="muted vacio">Sin cuentas por pagar. 🎉</p>}
+      {Object.entries(semanas).sort(([a], [b]) => a.localeCompare(b)).map(([semana, lista]) => (
+        <div key={semana}>
+          <h3>
+            {semana === 'sin-fecha' ? 'Sin fecha de vencimiento' : `Semana del ${semana}`}
+            {' · '}{dinero(r2(lista.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0)), 'USD')}
+          </h3>
+          {lista.map((c) => (
+            <div key={c.id} className="tarjeta">
+              <div className="tarjeta-top">
+                <strong>{c.poFolio || c.fecha} · {(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</strong>
+                <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
+              </div>
+              <div className="muted">
+                Compra {c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}
+                {c.fechaVence && (
+                  c.fechaVence < hoyStr
+                    ? <span className="badge vencido" style={{ marginLeft: '0.5rem' }}>Vencida</span>
+                    : <span> · vence {c.fechaVence}</span>
+                )}
+              </div>
+              {c.facturaURL && <div><a href={c.facturaURL} target="_blank" rel="noreferrer">Ver factura</a></div>}
+              <button className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button>
+            </div>
+          ))}
+        </div>
+      ))}
     </div>
   )
 }
