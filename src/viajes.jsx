@@ -850,6 +850,66 @@ function MisViajes({ usuario }) {
           <div className="muted">{v.fecha} · {v.origen} → {v.destino}</div>
           <div className="muted">Unidad {v.unidadNumero}{v.cajaNumero && ` · Caja ${v.cajaNumero}`}</div>
           <div className="muted">Viáticos entregados: {dinero(v.viaticosEntregados, 'USD')}</div>
+          {v.estatus === 'en_proceso' && <EntregasChofer viajeId={v.id} />}
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// entregas del viaje en curso: el chofer las marca entregadas con foto de evidencia opcional
+function EntregasChofer({ viajeId }) {
+  const [entregas, setEntregas] = useState(null)
+  const [fotos, setFotos] = useState({}) // entregaId -> File
+  const [subiendo, setSubiendo] = useState('')
+
+  useEffect(() => onSnapshot(collection(db, 'viajes', viajeId, 'entregas'),
+    (s) => setEntregas(
+      s.docs.map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)),
+    ), console.error), [viajeId])
+
+  const entregar = async (e) => {
+    if (!confirm(`¿Marcar como entregada la entrega de ${e.clienteNombre}?`)) return
+    setSubiendo(e.id)
+    try {
+      const archivo = fotos[e.id]
+      const url = archivo ? await subirArchivo(`viajes/${viajeId}/pod_${e.id}_${archivo.name}`, archivo) : ''
+      await marcarEntregada(viajeId, e, url)
+    } catch (err) {
+      console.error(err)
+      alert('Error: ' + err.message)
+    } finally {
+      setSubiendo('')
+    }
+  }
+
+  if (!entregas?.length) return null
+  return (
+    <div className="linea">
+      <strong>Entregas</strong>
+      {entregas.map((e) => (
+        <div key={e.id} className="tarjeta detalle">
+          <div className="tarjeta-top">
+            <strong>{e.ordenSecuencia}. {e.clienteNombre}</strong>
+            {e.estatus === 'entregada'
+              ? <span className="badge completado">Entregada</span>
+              : <span className="badge en_proceso">Pendiente</span>}
+          </div>
+          <div className="muted">{e.direccion}</div>
+          {e.mercancia && <div className="muted">{e.mercancia}</div>}
+          {e.estatus === 'pendiente' && (
+            <>
+              <label className="campo"><span>Foto de evidencia (opcional)</span>
+                <input type="file" accept="image/*" capture="environment"
+                  onChange={(ev) => setFotos({ ...fotos, [e.id]: ev.target.files[0] ?? null })} />
+              </label>
+              <button className="btn-completar" disabled={subiendo === e.id} onClick={() => entregar(e)}>
+                {subiendo === e.id ? 'Guardando…' : 'Marcar como entregada'}
+              </button>
+            </>
+          )}
+          {e.evidenciaUrl && <p><a href={e.evidenciaUrl} target="_blank" rel="noreferrer">Ver evidencia</a></p>}
         </div>
       ))}
     </div>

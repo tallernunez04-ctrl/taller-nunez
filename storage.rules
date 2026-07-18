@@ -11,9 +11,13 @@ service firebase.storage {
     function rol() { return usuario().rol; }
 
     // adjuntos de cobranza de viajes (facturas, XML, comprobantes)
+    // y evidencias de entrega (POD) que sube el chofer
     match /viajes/{viajeId}/{archivo} {
       allow read: if activo();
       allow write: if activo() && rol() == 'admin'
+        && request.resource.size < 10 * 1024 * 1024;
+      allow write: if activo() && rol() == 'chofer'
+        && archivo.matches('pod_.*')
         && request.resource.size < 10 * 1024 * 1024;
     }
 
