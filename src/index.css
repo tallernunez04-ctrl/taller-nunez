@@ -485,3 +485,35 @@ td.num, th.num { text-align: right; }
   .recibo { break-inside: avoid; page-break-inside: avoid; }
   body { background: #fff; }
 }
+
+/* ---------- modal (cambio de custodia) ---------- */
+.modal-fondo {
+  position: fixed; inset: 0; z-index: 50;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem;
+}
+.modal {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 1.2rem;
+  width: 100%; max-width: 560px;
+  max-height: 90vh; overflow-y: auto;
+}
+
+/* ---------- timeline de movimientos (cadena de custodia) ---------- */
+.timeline {
+  border-left: 2px solid var(--border);
+  margin: 0.5rem 0 1rem 0.4rem;
+  padding-left: 1rem;
+  display: grid; gap: 0.8rem;
+}
+.tl-item { position: relative; }
+.tl-item::before {
+  content: '';
+  position: absolute; left: -1.36rem; top: 0.35rem;
+  width: 10px; height: 10px; border-radius: 50%;
+  background: var(--muted);
+}
+.tl-item.activo::before { background: var(--accent); }
+.tl-motivo { font-style: italic; color: var(--secundario); margin: 0 0 0.2rem; }

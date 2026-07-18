@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react'
 import {
-  collection, doc, getDocs, onSnapshot, query, runTransaction,
-  serverTimestamp, updateDoc, where,
+  collection, doc, getDocs, increment, onSnapshot, query, runTransaction,
+  serverTimestamp, updateDoc, where, writeBatch,
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
 import { hoy } from './taller'
+import { mediana } from './costeo'
 import { dinero, incBalance, r2, useColeccion, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
 import { direccionTexto } from './catalogos'
 
 /* Módulo Viajes: operación + costeo + viáticos + cuentas por cobrar.
-   El costeo se calcula UNA vez al guardar (valores estáticos en el doc),
-   nunca al vuelo en dashboards. */
+   Rediseño con dos ejes independientes:
+   - /viajes/{id}/entregas: consolidación (varios clientes/destinos por viaje)
+   - /viajes/{id}/movimientos: cadena de custodia (chofer/camión pueden cambiar a medio viaje)
+   El doc padre denormaliza choferActual- y camionActual- (y los campos legacy operador- y unidad-
+   que nómina, rules y la PWA del chofer siguen leyendo) — solo se escriben en transacción.
+   El costeo se calcula UNA vez al guardar, con la MEDIANA de las últimas 5 cargas. */
 
 export const ESTATUS_VIAJE = { en_proceso: 'En proceso', terminado: 'Terminado', conciliado: 'Conciliado' }
 
@@ -18,6 +23,85 @@ const sumaDias = (fecha, dias) => {
   const d = new Date(fecha + 'T00:00')
   d.setDate(d.getDate() + dias)
   return d.toLocaleDateString('sv')
+}
+
+const fmtTs = (t) => t?.toDate?.().toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) ?? '—'
+
+// rendimiento para costeo: mediana (resistente a atípicos); cae a promedio en docs viejos
+const rendimientoCosteo = (u) =>
+  u?.rendimientoMediana ?? mediana(u?.ultimosRendimientos) ?? u?.rendimientoPromedio ?? 0
+
+/* ---------- Transacciones de custodia y entregas ---------- */
+
+// cierra el movimiento activo, crea el nuevo encadenado y actualiza los denormalizados. Todo o nada.
+async function registrarCambio({ viaje, movActivo, chofer, camion, cambiarCaja, caja, odometroCierre, odometroInicioNuevo, motivo }) {
+  await runTransaction(db, async (tx) => {
+    const viajeRef = doc(db, 'viajes', viaje.id)
+    const snap = await tx.get(viajeRef)
+    if (snap.data()?.estatus !== 'en_proceso') throw new Error('El viaje ya no está en proceso')
+    const cierre = odometroCierre ?? null
+    const kmRec = (cierre != null && movActivo.odometroInicio != null)
+      ? Math.max(0, r2(cierre - movActivo.odometroInicio))
+      : null
+    tx.update(doc(db, 'viajes', viaje.id, 'movimientos', movActivo.id), {
+      fechaHoraFin: serverTimestamp(), odometroFin: cierre, kmRecorridos: kmRec, activo: false,
+    })
+    const cajaPlataformaId = cambiarCaja ? (caja?.id ?? null) : (movActivo.cajaPlataformaId ?? null)
+    const cajaNumero = cambiarCaja ? (caja?.numero ?? '') : (viaje.cajaNumero ?? '')
+    tx.set(doc(collection(db, 'viajes', viaje.id, 'movimientos')), {
+      choferId: chofer.id, choferNombre: chofer.nombre, choferEmail: chofer.email ?? '',
+      camionId: camion.id, camionNumero: camion.numero,
+      cajaPlataformaId,
+      fechaHoraInicio: serverTimestamp(), fechaHoraFin: null,
+      // mismo camión: el odómetro continúa; camión nuevo: arranca con su propia lectura
+      odometroInicio: camion.id === movActivo.camionId ? cierre : (odometroInicioNuevo ?? null),
+      odometroFin: null, kmRecorridos: null,
+      motivoCambio: motivo, movimientoAnteriorId: movActivo.id, activo: true,
+    })
+    tx.update(viajeRef, {
+      choferActualId: chofer.id, choferActualNombre: chofer.nombre, choferActualEmail: chofer.email ?? '',
+      camionActualId: camion.id, camionActualNumero: camion.numero,
+      cajaPlataformaId, cajaNumero,
+      operadorId: chofer.id, operadorNombre: chofer.nombre, operadorEmail: chofer.email ?? '',
+      unidadId: camion.id, unidadNumero: camion.numero, cajaId: cajaPlataformaId ?? '',
+      kmTotales: increment(kmRec ?? 0),
+    })
+  })
+}
+
+// terminar exige cero entregas pendientes (validado también en firestore.rules) y cierra el movimiento activo
+async function terminarViaje({ viaje, movActivo, odometroFin, viaticosComprobados }) {
+  await runTransaction(db, async (tx) => {
+    const viajeRef = doc(db, 'viajes', viaje.id)
+    const snap = await tx.get(viajeRef)
+    const v = snap.data()
+    if (v?.estatus !== 'en_proceso') throw new Error('El viaje ya no está en proceso')
+    if ((v.entregasPendientes ?? 0) > 0) throw new Error(`Hay ${v.entregasPendientes} entrega(s) pendiente(s) — no se puede terminar`)
+    const fin = odometroFin ?? null
+    const kmRec = (fin != null && movActivo?.odometroInicio != null)
+      ? Math.max(0, r2(fin - movActivo.odometroInicio))
+      : null
+    if (movActivo) {
+      tx.update(doc(db, 'viajes', viaje.id, 'movimientos', movActivo.id), {
+        fechaHoraFin: serverTimestamp(), odometroFin: fin, kmRecorridos: kmRec, activo: false,
+      })
+    }
+    tx.update(viajeRef, {
+      estatus: 'terminado', terminadoAt: serverTimestamp(),
+      viaticosComprobados: viaticosComprobados ?? (v.viaticosComprobados || 0),
+      kmTotales: increment(kmRec ?? 0),
+    })
+  })
+}
+
+// entregada + decremento del contador en el padre (lo usa admin y la PWA del chofer)
+export async function marcarEntregada(viajeId, entrega, evidenciaUrl) {
+  await runTransaction(db, async (tx) => {
+    tx.update(doc(db, 'viajes', viajeId, 'entregas', entrega.id), {
+      estatus: 'entregada', fechaHoraEntregaReal: serverTimestamp(), evidenciaUrl: evidenciaUrl || '',
+    })
+    tx.update(doc(db, 'viajes', viajeId), { entregasPendientes: increment(-1) })
+  })
 }
 
 export default function Viajes({ usuario, vista }) {
@@ -69,7 +153,10 @@ function ListaViajes() {
           </div>
           <div className="muted">{v.fecha} · {v.clienteNombre} · Unidad <strong>{v.unidadNumero}</strong></div>
           <div className="muted">{v.origen} → {v.destino} · {v.operadorNombre}{v.operadorProvisional ? ' (provisional)' : ''}</div>
-          <div className="muted">Ingreso {dinero(v.precio, 'USD')} · Costeo est. {dinero(v.costeoEstimado?.total, 'USD')}</div>
+          <div className="muted">
+            Ingreso {dinero(v.precio, 'USD')} · Costeo est. {dinero(v.costeoEstimado?.total, 'USD')}
+            {v.entregasPendientes > 0 && ` · ${v.entregasPendientes} entrega(s) pendiente(s)`}
+          </div>
         </button>
       ))}
       <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Nuevo viaje">+</button>
@@ -79,12 +166,42 @@ function ListaViajes() {
 
 const viajeVacio = () => ({
   fecha: hoy(),
-  clienteId: '', direccionCargaId: '', direccionEntregaId: '',
-  unidadId: '', cajaId: '', operadorId: '',
+  unidadId: '', cajaId: '', operadorId: '', odometroInicio: '',
   tramoId: '', km: '', precio: '',
   viaticosEntregados: '', viaticosComprobados: '',
   notas: '',
 })
+
+const entregaVacia = () => ({ clienteId: '', direccionEntregaId: '', mercancia: '' })
+
+// campos de una entrega (cliente + dirección + mercancía); se usa en alta de viaje y en agregar entrega
+function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
+  return (
+    <>
+      <label className="campo"><span>Cliente</span>
+        <select
+          value={e.clienteId}
+          onChange={(ev) => { cargarDirs(ev.target.value); onChange({ ...e, clienteId: ev.target.value, direccionEntregaId: '' }) }}
+        >
+          <option value="">Selecciona cliente…</option>
+          {clientes.slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)).map((c) => (
+            <option key={c.id} value={c.id}>{c.razonSocial}</option>
+          ))}
+        </select>
+      </label>
+      <label className="campo"><span>Dirección de entrega</span>
+        <select value={e.direccionEntregaId} onChange={(ev) => onChange({ ...e, direccionEntregaId: ev.target.value })}>
+          <option value="">Selecciona…</option>
+          {(dirs[e.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
+        </select>
+      </label>
+      <label className="campo"><span>Mercancía</span>
+        <input value={e.mercancia} onChange={(ev) => onChange({ ...e, mercancia: ev.target.value })}
+          placeholder="Ej. 22 tarimas de aguacate" />
+      </label>
+    </>
+  )
+}
 
 function ViajeForm({ viaje, onDone }) {
   const unidades = useUnidades()
@@ -93,25 +210,40 @@ function ViajeForm({ viaje, onDone }) {
   const operadores = useColeccion('operadores') ?? []
   const tramos = useColeccion('tabuladores') ?? []
   const [config, setConfig] = useState(null)
-  const [direcciones, setDirecciones] = useState([])
-  const [f, setF] = useState(() => viaje ? { ...viajeVacio(), ...viaje } : viajeVacio())
+  const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
+  const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven en subcolección
+  const [dirs, setDirs] = useState({}) // cache de direcciones por cliente
+  const [movs, setMovs] = useState(viaje ? null : [])
+  const [modalCambio, setModalCambio] = useState(false)
+  const [terminando, setTerminando] = useState(false)
+  const [odometroFin, setOdometroFin] = useState('')
   const [guardando, setGuardando] = useState(false)
 
   useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => setConfig(s.data() ?? {}), console.error), [])
 
-  // direcciones del cliente seleccionado
+  // historial de movimientos (cadena de custodia) del viaje existente
   useEffect(() => {
-    if (!f.clienteId) { setDirecciones([]); return }
-    getDocs(collection(db, 'clientes', f.clienteId, 'direcciones'))
-      .then((s) => setDirecciones(s.docs.map((d) => ({ id: d.id, ...d.data() }))))
+    if (!viaje) return
+    return onSnapshot(collection(db, 'viajes', viaje.id, 'movimientos'),
+      (s) => setMovs(
+        s.docs.map((d) => ({ id: d.id, ...d.data() }))
+          .sort((a, b) => (a.fechaHoraInicio?.seconds ?? 0) - (b.fechaHoraInicio?.seconds ?? 0)),
+      ), console.error)
+  }, [viaje?.id])
+
+  const cargarDirs = (cid) => {
+    if (!cid || dirs[cid]) return
+    getDocs(collection(db, 'clientes', cid, 'direcciones'))
+      .then((s) => setDirs((prev) => ({ ...prev, [cid]: s.docs.map((d) => ({ id: d.id, ...d.data() })) })))
       .catch(console.error)
-  }, [f.clienteId])
+  }
 
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
-  const unidad = unidades.find((u) => u.id === f.unidadId)
+  const movActivo = (movs ?? []).find((m) => m.activo) ?? null
+  const camionActualId = viaje ? (viaje.camionActualId ?? viaje.unidadId) : f.unidadId
+  const unidad = unidades.find((u) => u.id === camionActualId)
   const tramo = tramos.find((t) => t.id === f.tramoId)
-  const cliente = clientes.find((c) => c.id === f.clienteId)
   const operadorBase = operadores.find((o) => o.unidadBaseId === f.unidadId)
   const operador = operadores.find((o) => o.id === f.operadorId)
 
@@ -126,42 +258,30 @@ function ViajeForm({ viaje, onDone }) {
     setF({ ...f, tramoId: e.target.value, km: f.km || (t?.km ? String(t.km) : '') })
   }
 
-  // costeo estimado: diésel (km / rendimiento × $/L, convertido a USD) + pago chofer del tabulador
+  // costeo estimado: diésel (km / mediana de rendimientos × $/L, a USD) + pago chofer del tabulador
   const km = Number(f.km) || 0
-  const rendimiento = unidad?.rendimientoPromedio || 0
+  const rendimiento = rendimientoCosteo(unidad)
   const precioLitro = config?.precioDieselLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
   const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
   const pagoChofer = tramo?.pagoChofer || 0
   const costeoTotal = r2(costoDieselUSD + pagoChofer)
 
-  const guardar = async (terminar) => {
-    if (!f.clienteId) { alert('Selecciona el cliente'); return }
-    if (!f.unidadId) { alert('Selecciona la unidad'); return }
-    if (!f.operadorId) { alert('Selecciona el operador'); return }
+  const guardar = async () => {
+    const entregasValidas = entregas.filter((e) => e.clienteId && e.direccionEntregaId)
+    if (!viaje) {
+      if (entregasValidas.length === 0) { alert('Agrega al menos una entrega (cliente + dirección)'); return }
+      if (!f.unidadId) { alert('Selecciona la unidad'); return }
+      if (!f.operadorId) { alert('Selecciona el operador'); return }
+    }
     if (!(km > 0)) { alert('Escribe los kilómetros del viaje'); return }
-    if (terminar && !confirm('¿Confirmar que el viaje terminó? Se registrarán los viáticos comprobados.')) return
     setGuardando(true)
     try {
-      const dirCarga = direcciones.find((d) => d.id === f.direccionCargaId)
-      const dirEntrega = direcciones.find((d) => d.id === f.direccionEntregaId)
-      const datos = {
+      const comunes = {
         fecha: f.fecha,
-        clienteId: f.clienteId,
-        clienteNombre: cliente?.razonSocial ?? '',
-        direccionCargaId: f.direccionCargaId,
-        direccionEntregaId: f.direccionEntregaId,
-        origen: tramo?.origen ?? (dirCarga ? dirCarga.ciudad : ''),
-        destino: tramo?.destino ?? (dirEntrega ? dirEntrega.ciudad : ''),
-        unidadId: f.unidadId,
-        unidadNumero: unidad?.numero ?? '',
-        cajaId: f.cajaId,
-        cajaNumero: unidades.find((u) => u.id === f.cajaId)?.numero ?? '',
-        operadorId: f.operadorId,
-        operadorNombre: operador?.nombre ?? '',
-        operadorEmail: operador?.email ?? '',
-        operadorProvisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
         tramoId: f.tramoId,
+        origen: tramo?.origen ?? viaje?.origen ?? '',
+        destino: tramo?.destino ?? viaje?.destino ?? '',
         km,
         kmFuente: 'manual', // cambiar a 'maps' cuando se integre Distance Matrix
         precio: Number(f.precio) || 0,
@@ -169,23 +289,62 @@ function ViajeForm({ viaje, onDone }) {
         viaticosEntregados: Number(f.viaticosEntregados) || 0,
         viaticosComprobados: Number(f.viaticosComprobados) || 0,
         notas: f.notas,
-        estatus: terminar ? 'terminado' : (viaje?.estatus ?? 'en_proceso'),
-        ...(terminar ? { terminadoAt: serverTimestamp() } : {}),
       }
       if (viaje) {
-        await updateDoc(doc(db, 'viajes', viaje.id), datos)
+        // chofer/camión/caja NO se tocan aquí: solo la transacción de cambio de movimiento
+        await updateDoc(doc(db, 'viajes', viaje.id), comunes)
       } else {
-        // folio consecutivo por transacción, igual que las WO
+        const caja = unidades.find((u) => u.id === f.cajaId)
+        const clientesIds = [...new Set(entregasValidas.map((e) => e.clienteId))]
+        const nombres = clientesIds.map((id) => clientes.find((c) => c.id === id)?.razonSocial ?? '').filter(Boolean)
+        // folio + viaje + primer movimiento + entregas: una sola transacción,
+        // nunca existe un viaje sin movimiento
         await runTransaction(db, async (tx) => {
           const cfgRef = doc(db, 'config', 'general')
           const cfg = await tx.get(cfgRef)
           const n = (cfg.data()?.ultimoViaje ?? 0) + 1
           tx.update(cfgRef, { ultimoViaje: n })
-          tx.set(doc(collection(db, 'viajes')), {
-            ...datos,
+          const viajeRef = doc(collection(db, 'viajes'))
+          tx.set(viajeRef, {
+            ...comunes,
             folio: 'V-' + String(n).padStart(4, '0'),
+            clientesIds,
+            clienteId: clientesIds[0],
+            clienteNombre: nombres.join(' + '),
+            estatus: 'en_proceso',
+            choferActualId: operador.id, choferActualNombre: operador.nombre, choferActualEmail: operador.email ?? '',
+            camionActualId: f.unidadId, camionActualNumero: unidad?.numero ?? '',
+            cajaPlataformaId: f.cajaId || null, cajaNumero: caja?.numero ?? '',
+            // legacy sincronizado: nómina, rules y PWA chofer leen estos campos
+            operadorId: operador.id, operadorNombre: operador.nombre, operadorEmail: operador.email ?? '',
+            operadorProvisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
+            unidadId: f.unidadId, unidadNumero: unidad?.numero ?? '', cajaId: f.cajaId,
+            entregasPendientes: entregasValidas.length,
+            kmTotales: 0,
             cobranza: { fechaFactura: '', fechaVence: '', facturaURL: '', xmlURL: '', pagado: false, comprobanteURL: '' },
             createdAt: serverTimestamp(),
+          })
+          tx.set(doc(collection(db, 'viajes', viajeRef.id, 'movimientos')), {
+            choferId: operador.id, choferNombre: operador.nombre, choferEmail: operador.email ?? '',
+            camionId: f.unidadId, camionNumero: unidad?.numero ?? '',
+            cajaPlataformaId: f.cajaId || null,
+            fechaHoraInicio: serverTimestamp(), fechaHoraFin: null,
+            odometroInicio: Number(f.odometroInicio) || null,
+            odometroFin: null, kmRecorridos: null,
+            motivoCambio: null, movimientoAnteriorId: null, activo: true,
+          })
+          entregasValidas.forEach((e, i) => {
+            const dir = (dirs[e.clienteId] ?? []).find((d) => d.id === e.direccionEntregaId)
+            tx.set(doc(collection(db, 'viajes', viajeRef.id, 'entregas')), {
+              clienteId: e.clienteId,
+              clienteNombre: clientes.find((c) => c.id === e.clienteId)?.razonSocial ?? '',
+              direccionEntregaId: e.direccionEntregaId,
+              direccion: dir ? direccionTexto(dir) : '',
+              mercancia: e.mercancia,
+              ordenSecuencia: i + 1,
+              estatus: 'pendiente',
+              fechaHoraEntregaReal: null, evidenciaUrl: '',
+            })
           })
         })
       }
@@ -198,7 +357,26 @@ function ViajeForm({ viaje, onDone }) {
     }
   }
 
+  const confirmarTerminar = async () => {
+    if (!confirm('¿Confirmar que el viaje terminó? Se registrarán los viáticos comprobados.')) return
+    setGuardando(true)
+    try {
+      await terminarViaje({
+        viaje, movActivo,
+        odometroFin: Number(odometroFin) || null,
+        viaticosComprobados: Number(f.viaticosComprobados) || 0,
+      })
+      onDone()
+    } catch (e) {
+      console.error(e)
+      alert('Error al terminar: ' + e.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
   const soloLectura = viaje && viaje.estatus === 'conciliado'
+  const enProceso = !viaje || viaje.estatus === 'en_proceso'
 
   return (
     <div>
@@ -207,57 +385,57 @@ function ViajeForm({ viaje, onDone }) {
       <label className="campo"><span>Fecha</span>
         <input type="date" value={f.fecha} onChange={set('fecha')} />
       </label>
-      <label className="campo"><span>Cliente</span>
-        <select value={f.clienteId} onChange={(e) => setF({ ...f, clienteId: e.target.value, direccionCargaId: '', direccionEntregaId: '' })}>
-          <option value="">Selecciona cliente…</option>
-          {clientes.slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)).map((c) => (
-            <option key={c.id} value={c.id}>{c.razonSocial}</option>
-          ))}
-        </select>
-      </label>
-      {f.clienteId && (
-        <div className="fila-2">
-          <label className="campo"><span>Dirección de carga</span>
-            <select value={f.direccionCargaId} onChange={set('direccionCargaId')}>
-              <option value="">Selecciona…</option>
-              {direcciones.map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
-            </select>
-          </label>
-          <label className="campo"><span>Dirección de entrega</span>
-            <select value={f.direccionEntregaId} onChange={set('direccionEntregaId')}>
-              <option value="">Selecciona…</option>
-              {direcciones.map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
-            </select>
-          </label>
-        </div>
-      )}
 
-      <SelectorUnidad
-        unidades={unidades.filter((u) => u.tipo === 'truck')}
-        value={f.unidadId}
-        onChange={elegirUnidad}
-        placeholder="Selecciona unidad…"
-      />
-      <label className="campo"><span>Caja (opcional)</span>
-        <select value={f.cajaId} onChange={set('cajaId')}>
-          <option value="">Sin caja</option>
-          {unidades.filter((u) => u.tipo !== 'truck').map((u) => (
-            <option key={u.id} value={u.id}>{u.numero} ({u.tipo})</option>
-          ))}
-        </select>
-      </label>
-      <label className="campo"><span>Operador</span>
-        <select value={f.operadorId} onChange={set('operadorId')}>
-          <option value="">Selecciona operador…</option>
-          {operadores.filter((o) => o.activo).sort((a, b) => a.nombre.localeCompare(b.nombre)).map((o) => (
-            <option key={o.id} value={o.id}>
-              {o.nombre}{o.unidadBaseId === f.unidadId ? ' (base)' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
-      {operadorBase && f.operadorId && f.operadorId !== operadorBase.id && (
-        <p className="muted tc-nota">Asignación provisional — la unidad base de {operadorBase.nombre} no se modifica.</p>
+      {/* custodia: en alta se captura el movimiento inicial; en edición solo se muestra y se cambia por transacción */}
+      {!viaje && (
+        <>
+          <SelectorUnidad
+            unidades={unidades.filter((u) => u.tipo === 'truck')}
+            value={f.unidadId}
+            onChange={elegirUnidad}
+            placeholder="Selecciona unidad…"
+          />
+          <label className="campo"><span>Caja / plataforma (opcional)</span>
+            <select value={f.cajaId} onChange={set('cajaId')}>
+              <option value="">Sin caja</option>
+              {unidades.filter((u) => u.tipo !== 'truck').map((u) => (
+                <option key={u.id} value={u.id}>{u.numero} ({u.tipo})</option>
+              ))}
+            </select>
+          </label>
+          <label className="campo"><span>Operador</span>
+            <select value={f.operadorId} onChange={set('operadorId')}>
+              <option value="">Selecciona operador…</option>
+              {operadores.filter((o) => o.activo).sort((a, b) => a.nombre.localeCompare(b.nombre)).map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.nombre}{o.unidadBaseId === f.unidadId ? ' (base)' : ''}
+                </option>
+              ))}
+            </select>
+          </label>
+          {operadorBase && f.operadorId && f.operadorId !== operadorBase.id && (
+            <p className="muted tc-nota">Asignación provisional — la unidad base de {operadorBase.nombre} no se modifica.</p>
+          )}
+          <label className="campo"><span>Odómetro inicial (opcional)</span>
+            <input type="number" inputMode="numeric" min="0" value={f.odometroInicio} onChange={set('odometroInicio')} />
+          </label>
+        </>
+      )}
+      {viaje && (
+        <div className="tarjeta detalle">
+          <div className="tarjeta-top">
+            <strong>Custodia actual</strong>
+            {enProceso && !soloLectura && (
+              <button className="btn-secundario" onClick={() => setModalCambio(true)}>Registrar cambio de chofer/unidad</button>
+            )}
+          </div>
+          <p>
+            Chofer: <strong>{viaje.choferActualNombre ?? viaje.operadorNombre}</strong>
+            {' · '}Camión: <strong>{viaje.camionActualNumero ?? viaje.unidadNumero}</strong>
+            {(viaje.cajaNumero || viaje.cajaId) && <> · Caja: <strong>{viaje.cajaNumero || viaje.cajaId}</strong></>}
+          </p>
+          {viaje.kmTotales > 0 && <p className="muted">Km recorridos (movimientos): {viaje.kmTotales.toLocaleString()}</p>}
+        </div>
       )}
 
       <div className="fila-2">
@@ -283,13 +461,45 @@ function ViajeForm({ viaje, onDone }) {
         </label>
       </div>
 
+      {/* entregas: en alta son filas locales que la transacción crea; en edición viven en la subcolección */}
+      {!viaje && (
+        <>
+          <h3>Entregas ({entregas.length})</h3>
+          {entregas.map((e, i) => (
+            <div key={i} className="tarjeta detalle">
+              <div className="tarjeta-top">
+                <strong>Entrega {i + 1}</strong>
+                <button
+                  type="button" className="btn-borrar" aria-label="Eliminar entrega"
+                  disabled={entregas.length === 1}
+                  onClick={() => setEntregas(entregas.filter((_, j) => j !== i))}
+                >🗑</button>
+              </div>
+              <EntregaCampos
+                e={e} clientes={clientes} dirs={dirs} cargarDirs={cargarDirs}
+                onChange={(nueva) => setEntregas(entregas.map((x, j) => (j === i ? nueva : x)))}
+              />
+            </div>
+          ))}
+          <button type="button" className="btn-secundario btn-bloque" onClick={() => setEntregas([...entregas, entregaVacia()])}>
+            + Agregar entrega
+          </button>
+        </>
+      )}
+      {viaje && (
+        <EntregasSection
+          viaje={viaje} clientes={clientes} dirs={dirs} cargarDirs={cargarDirs}
+          editable={enProceso && !soloLectura}
+        />
+      )}
+
       <div className="totales">
-        <div><span className="muted">Diésel estimado ({km} km / {rendimiento || '—'} km/L × ${precioLitro}/L)</span><span>{dinero(costoDieselUSD, 'USD')}</span></div>
+        <div><span className="muted">Diésel estimado ({km} km / {rendimiento || '—'} km/L mediana × ${precioLitro}/L)</span><span>{dinero(costoDieselUSD, 'USD')}</span></div>
         <div><span className="muted">Pago al chofer (tabulador)</span><span>{dinero(pagoChofer, 'USD')}</span></div>
         <div className="total-grande"><span>COSTEO ESTIMADO</span><span>{dinero(costeoTotal, 'USD')}</span></div>
       </div>
       {!precioLitro && <p className="error">Configura el precio del diésel en el Dashboard para estimar el costeo.</p>}
-      {unidad && !rendimiento && <p className="muted tc-nota">La unidad aún no tiene rendimiento promedio (se calcula con las cargas de diésel).</p>}
+      {unidad && !rendimiento && <p className="muted tc-nota">La unidad aún no tiene rendimientos registrados (se calculan con las cargas de diésel).</p>}
 
       {viaje && (
         <label className="campo"><span>Viáticos comprobados por el chofer (USD)</span>
@@ -306,17 +516,39 @@ function ViajeForm({ viaje, onDone }) {
         <textarea value={f.notas} onChange={set('notas')} />
       </label>
 
+      {viaje && <MovimientosTimeline movs={movs} />}
+
       {!soloLectura && (
         <div className="acciones">
-          <button className="btn-primario" disabled={guardando} onClick={() => guardar(false)}>
+          <button className="btn-primario" disabled={guardando} onClick={guardar}>
             {guardando ? 'Guardando…' : 'Guardar'}
           </button>
-          {viaje && viaje.estatus === 'en_proceso' && (
-            <button className="btn-completar" disabled={guardando} onClick={() => guardar(true)}>
+          {viaje && viaje.estatus === 'en_proceso' && !terminando && (
+            <button
+              className="btn-completar" disabled={guardando}
+              onClick={() => {
+                if ((viaje.entregasPendientes ?? 0) > 0) {
+                  alert(`Hay ${viaje.entregasPendientes} entrega(s) pendiente(s) — entrégalas antes de terminar el viaje.`)
+                  return
+                }
+                setTerminando(true)
+              }}
+            >
               Terminar viaje
             </button>
           )}
           <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
+        </div>
+      )}
+      {terminando && (
+        <div className="tarjeta detalle">
+          <label className="campo"><span>Odómetro final (opcional)</span>
+            <input type="number" inputMode="numeric" min="0" value={odometroFin} onChange={(e) => setOdometroFin(e.target.value)} />
+          </label>
+          <div className="acciones">
+            <button className="btn-completar" disabled={guardando} onClick={confirmarTerminar}>Confirmar término</button>
+            <button className="btn-secundario" disabled={guardando} onClick={() => setTerminando(false)}>Cancelar</button>
+          </div>
         </div>
       )}
       {soloLectura && (
@@ -324,6 +556,266 @@ function ViajeForm({ viaje, onDone }) {
           <button className="btn-secundario" onClick={onDone}>Volver</button>
         </div>
       )}
+
+      {modalCambio && movActivo && (
+        <ModalCambio
+          viaje={viaje} movActivo={movActivo}
+          operadores={operadores} unidades={unidades}
+          onDone={() => setModalCambio(false)}
+        />
+      )}
+    </div>
+  )
+}
+
+/* ---------- Entregas del viaje (subcolección, admin) ---------- */
+
+function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
+  const [entregas, setEntregas] = useState(null)
+  const [nueva, setNueva] = useState(null) // entregaVacia() | null
+
+  useEffect(() => onSnapshot(collection(db, 'viajes', viaje.id, 'entregas'),
+    (s) => setEntregas(
+      s.docs.map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)),
+    ), console.error), [viaje.id])
+
+  const lista = entregas ?? []
+
+  const mover = async (i, dir) => {
+    const a = lista[i], b = lista[i + dir]
+    if (!a || !b) return
+    // intercambio de secuencia en un batch: nunca queda a medias
+    const batch = writeBatch(db)
+    batch.update(doc(db, 'viajes', viaje.id, 'entregas', a.id), { ordenSecuencia: b.ordenSecuencia })
+    batch.update(doc(db, 'viajes', viaje.id, 'entregas', b.id), { ordenSecuencia: a.ordenSecuencia })
+    await batch.commit().catch((e) => alert('Error: ' + e.message))
+  }
+
+  const agregar = async () => {
+    if (!nueva.clienteId || !nueva.direccionEntregaId) { alert('Cliente y dirección son obligatorios'); return }
+    try {
+      const dir = (dirs[nueva.clienteId] ?? []).find((d) => d.id === nueva.direccionEntregaId)
+      const orden = Math.max(0, ...lista.map((e) => e.ordenSecuencia ?? 0)) + 1
+      await runTransaction(db, async (tx) => {
+        tx.set(doc(collection(db, 'viajes', viaje.id, 'entregas')), {
+          clienteId: nueva.clienteId,
+          clienteNombre: clientes.find((c) => c.id === nueva.clienteId)?.razonSocial ?? '',
+          direccionEntregaId: nueva.direccionEntregaId,
+          direccion: dir ? direccionTexto(dir) : '',
+          mercancia: nueva.mercancia,
+          ordenSecuencia: orden,
+          estatus: 'pendiente',
+          fechaHoraEntregaReal: null, evidenciaUrl: '',
+        })
+        tx.update(doc(db, 'viajes', viaje.id), { entregasPendientes: increment(1) })
+      })
+      setNueva(null)
+    } catch (e) { alert('Error: ' + e.message) }
+  }
+
+  const eliminar = async (entrega) => {
+    if (!confirm(`¿Eliminar la entrega de ${entrega.clienteNombre}?`)) return
+    try {
+      await runTransaction(db, async (tx) => {
+        tx.delete(doc(db, 'viajes', viaje.id, 'entregas', entrega.id))
+        if (entrega.estatus === 'pendiente') {
+          tx.update(doc(db, 'viajes', viaje.id), { entregasPendientes: increment(-1) })
+        }
+      })
+    } catch (e) { alert('Error: ' + e.message) }
+  }
+
+  const entregar = async (entrega) => {
+    if (!confirm(`¿Marcar como entregada la entrega de ${entrega.clienteNombre}?`)) return
+    try { await marcarEntregada(viaje.id, entrega, '') } catch (e) { alert('Error: ' + e.message) }
+  }
+
+  return (
+    <>
+      <h3>Entregas ({lista.length}{viaje.entregasPendientes > 0 ? ` · ${viaje.entregasPendientes} pendientes` : ''})</h3>
+      {entregas === null && <p className="muted">Cargando…</p>}
+      {entregas !== null && lista.length === 0 && (
+        <p className="muted">Sin entregas registradas (viaje anterior a la migración).</p>
+      )}
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table>
+            <thead>
+              <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>Mercancía</th><th>Estatus</th>{editable && <th />}</tr>
+            </thead>
+            <tbody>
+              {lista.map((e, i) => (
+                <tr key={e.id}>
+                  <td>{e.ordenSecuencia}</td>
+                  <td><strong>{e.clienteNombre}</strong></td>
+                  <td className="muted">{e.direccion}</td>
+                  <td>{e.mercancia}</td>
+                  <td>
+                    {e.estatus === 'entregada'
+                      ? <span className="badge completado">Entregada</span>
+                      : <span className="badge en_proceso">Pendiente</span>}
+                    {e.evidenciaUrl && <> <a href={e.evidenciaUrl} target="_blank" rel="noreferrer">POD</a></>}
+                  </td>
+                  {editable && (
+                    <td className="num">
+                      <button className="btn-borrar" aria-label="Subir" disabled={i === 0} onClick={() => mover(i, -1)}>▲</button>
+                      <button className="btn-borrar" aria-label="Bajar" disabled={i === lista.length - 1} onClick={() => mover(i, 1)}>▼</button>
+                      {e.estatus === 'pendiente' && (
+                        <>
+                          <button className="btn-borrar" aria-label="Marcar entregada" onClick={() => entregar(e)}>✓</button>
+                          <button className="btn-borrar" aria-label="Eliminar" onClick={() => eliminar(e)}>🗑</button>
+                        </>
+                      )}
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {editable && !nueva && (
+        <button type="button" className="btn-secundario btn-bloque" onClick={() => setNueva(entregaVacia())}>+ Agregar entrega</button>
+      )}
+      {editable && nueva && (
+        <div className="tarjeta detalle">
+          <EntregaCampos e={nueva} onChange={setNueva} clientes={clientes} dirs={dirs} cargarDirs={cargarDirs} />
+          <div className="acciones">
+            <button className="btn-primario" onClick={agregar}>Agregar</button>
+            <button className="btn-secundario" onClick={() => setNueva(null)}>Cancelar</button>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ---------- Timeline de movimientos (cadena de custodia) ---------- */
+
+function MovimientosTimeline({ movs }) {
+  return (
+    <>
+      <h3>Historial de movimientos</h3>
+      {movs === null && <p className="muted">Cargando…</p>}
+      {movs !== null && movs.length === 0 && (
+        <p className="muted">Sin movimientos registrados (viaje anterior a la migración).</p>
+      )}
+      {movs?.length > 0 && (
+        <div className="timeline">
+          {movs.map((m) => (
+            <div key={m.id} className={'tl-item' + (m.activo ? ' activo' : '')}>
+              {m.motivoCambio && <p className="tl-motivo">“{m.motivoCambio}”</p>}
+              <div>
+                <strong>{m.choferNombre}</strong> · Camión {m.camionNumero}
+                {m.activo && <> <span className="badge en_proceso">Activo</span></>}
+              </div>
+              <div className="muted">
+                {fmtTs(m.fechaHoraInicio)} → {m.activo ? 'en curso' : fmtTs(m.fechaHoraFin)}
+                {m.odometroInicio != null && ` · odómetro ${m.odometroInicio.toLocaleString()}${m.odometroFin != null ? ` → ${m.odometroFin.toLocaleString()}` : ''}`}
+                {m.kmRecorridos != null && ` · ${m.kmRecorridos.toLocaleString()} km`}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  )
+}
+
+/* ---------- Modal de cambio de chofer/unidad ---------- */
+
+function ModalCambio({ viaje, movActivo, operadores, unidades, onDone }) {
+  const [f, setF] = useState({
+    choferId: '', camionId: movActivo.camionId, cambiarCaja: false,
+    cajaId: movActivo.cajaPlataformaId ?? '', odometroCierre: '', odometroInicioNuevo: '', motivo: '',
+  })
+  const [guardando, setGuardando] = useState(false)
+  const mismoCamion = f.camionId === movActivo.camionId
+
+  const guardar = async () => {
+    const chofer = operadores.find((o) => o.id === f.choferId)
+    const camion = unidades.find((u) => u.id === f.camionId)
+    if (!chofer) { alert('Selecciona el nuevo chofer'); return }
+    if (!camion) { alert('Selecciona el camión'); return }
+    if (!f.motivo.trim()) { alert('Describe el motivo del cambio'); return }
+    setGuardando(true)
+    try {
+      await registrarCambio({
+        viaje, movActivo, chofer, camion,
+        cambiarCaja: f.cambiarCaja,
+        caja: unidades.find((u) => u.id === f.cajaId) ?? null,
+        odometroCierre: Number(f.odometroCierre) || null,
+        odometroInicioNuevo: Number(f.odometroInicioNuevo) || null,
+        motivo: f.motivo.trim(),
+      })
+      onDone()
+    } catch (e) {
+      console.error(e)
+      alert('Error al registrar el cambio: ' + e.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
+
+  return (
+    <div className="modal-fondo" onClick={(e) => { if (e.target === e.currentTarget) onDone() }}>
+      <div className="modal">
+        <h3>Registrar cambio de chofer/unidad</h3>
+        <p className="muted">
+          Movimiento actual: {movActivo.choferNombre} · Camión {movActivo.camionNumero}
+        </p>
+        <label className="campo"><span>Nuevo chofer</span>
+          <select value={f.choferId} onChange={set('choferId')}>
+            <option value="">Selecciona chofer…</option>
+            {operadores.filter((o) => o.activo).sort((a, b) => a.nombre.localeCompare(b.nombre)).map((o) => (
+              <option key={o.id} value={o.id}>{o.nombre}</option>
+            ))}
+          </select>
+        </label>
+        <label className="campo"><span>Camión</span>
+          <select value={f.camionId} onChange={set('camionId')}>
+            {unidades.filter((u) => u.tipo === 'truck').map((u) => (
+              <option key={u.id} value={u.id}>{u.numero}{u.id === movActivo.camionId ? ' (mismo camión)' : ''}</option>
+            ))}
+          </select>
+        </label>
+        <label className="campo"><span>Odómetro de cierre del tramo</span>
+          <input type="number" inputMode="numeric" min="0" value={f.odometroCierre} onChange={set('odometroCierre')} />
+        </label>
+        {!mismoCamion && (
+          <label className="campo"><span>Odómetro inicial del nuevo camión (opcional)</span>
+            <input type="number" inputMode="numeric" min="0" value={f.odometroInicioNuevo} onChange={set('odometroInicioNuevo')} />
+          </label>
+        )}
+        <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={f.cambiarCaja}
+            onChange={(e) => setF({ ...f, cambiarCaja: e.target.checked })} />
+          <span style={{ margin: 0 }}>Cambiar caja/plataforma (caso excepcional — emergencia mecánica)</span>
+        </label>
+        {f.cambiarCaja && (
+          <label className="campo"><span>Nueva caja/plataforma</span>
+            <select value={f.cajaId} onChange={set('cajaId')}>
+              <option value="">Sin caja</option>
+              {unidades.filter((u) => u.tipo !== 'truck').map((u) => (
+                <option key={u.id} value={u.id}>{u.numero} ({u.tipo})</option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="campo"><span>Motivo / comentarios del cambio</span>
+          <textarea rows={4} value={f.motivo} onChange={set('motivo')}
+            placeholder="Describe la situación: relevo fronterizo, infracción, tema médico, falla mecánica…" />
+        </label>
+        <div className="acciones">
+          <button className="btn-primario" disabled={guardando} onClick={guardar}>
+            {guardando ? 'Guardando…' : 'Registrar cambio'}
+          </button>
+          <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
+        </div>
+      </div>
     </div>
   )
 }
