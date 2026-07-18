@@ -1,11 +1,12 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
-  addDoc, collection, doc, onSnapshot, orderBy, query, runTransaction,
+  addDoc, collection, doc, getDocs, limit, onSnapshot, orderBy, query, runTransaction,
   serverTimestamp, updateDoc, where,
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
 import { hoy } from './taller'
+import { mediana, esAtipico } from './costeo'
 import { BadgeMantenimiento, dinero, r2, useUnidades, SelectorUnidad } from './compras'
 
 /* Módulo Diésel: captura del chofer en ruta, rendimientos por unidad
@@ -38,6 +39,22 @@ function CargaDiesel({ usuario }) {
   const [f, setF] = useState(cargaVacia)
   const [guardando, setGuardando] = useState(false)
   const [cargas, setCargas] = useState(null)
+  const [viajesEnCurso, setViajesEnCurso] = useState([])
+  const [viajeId, setViajeId] = useState('')
+
+  // viajes en proceso del chofer, para atribuir el diésel al movimiento activo
+  useEffect(() => {
+    if (usuario.rol !== 'chofer') return
+    return onSnapshot(
+      query(collection(db, 'viajes'), where('operadorEmail', '==', usuario.email)),
+      (s) => {
+        const activos = s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((v) => v.estatus === 'en_proceso')
+        setViajesEnCurso(activos)
+        setViajeId((prev) => (activos.some((v) => v.id === prev) ? prev : (activos[0]?.id ?? '')))
+      },
+      console.error,
+    )
+  }, [usuario.email, usuario.rol])
 
   // el chofer ve sus propias cargas recientes; admin ve todas.
   // orden en cliente para no requerir índice compuesto (patrón de taller.jsx)
@@ -74,12 +91,33 @@ function CargaDiesel({ usuario }) {
     setGuardando(true)
     try {
       const caja = unidades.find((u) => u.id === f.cajaId)
+      // liga al movimiento activo del viaje: el consumo se atribuye al chofer/camión del tramo
+      let liga = { viajeId: null, viajeFolio: null, movimientoId: null }
+      if (viajeId) {
+        const movs = await getDocs(query(collection(db, 'viajes', viajeId, 'movimientos'), where('activo', '==', true)))
+        liga = {
+          viajeId,
+          viajeFolio: viajesEnCurso.find((v) => v.id === viajeId)?.folio ?? null,
+          movimientoId: movs.docs[0]?.id ?? null,
+        }
+      }
       // rendimiento = distancia recorrida desde la última carga / litros
       // ponytail: unidades ya vive en Supabase, cargasDiesel sigue en Firestore -- no hay
-      // transacción cruzada posible entre las dos bases.
+      // transacción cruzada posible entre las dos bases. El historial de rendimientos ya no vive
+      // en el doc de la unidad (Supabase no tiene esas columnas): se deriva de las últimas
+      // cargas de diésel de esta unidad, que siguen siendo la fuente real del dato.
       const rendimiento = (unidad.ultimaLectura != null && odometro > unidad.ultimaLectura)
         ? r2((odometro - unidad.ultimaLectura) / litros)
         : null
+      const previosSnap = await getDocs(query(
+        collection(db, 'cargasDiesel'),
+        where('unidadId', '==', f.unidadId),
+        orderBy('createdAt', 'desc'),
+        limit(5),
+      ))
+      const previos = previosSnap.docs.map((d) => d.data().rendimiento).filter((r) => r != null)
+      // el dato atípico se guarda igual (es historia real), solo queda marcado
+      const atipico = rendimiento != null && esAtipico(rendimiento, previos)
       await runTransaction(db, async (tx) => {
         tx.set(doc(collection(db, 'cargasDiesel')), {
           fecha: hoy(),
@@ -90,6 +128,8 @@ function CargaDiesel({ usuario }) {
           odometro,
           unidadLectura: unidad.unidadLectura,
           rendimiento,
+          esAtipico: atipico,
+          ...liga,
           caja: f.conCaja ? {
             cajaId: f.cajaId,
             cajaNumero: caja?.numero ?? '',
@@ -102,6 +142,21 @@ function CargaDiesel({ usuario }) {
           operadorNombre: usuario.nombre,
           createdAt: serverTimestamp(),
         })
+        if (atipico) {
+          // alerta a la bandeja que taller ya vigila; misma forma que un reporte manual
+          tx.set(doc(collection(db, 'reportesFalla')), {
+            fecha: hoy(),
+            unidadId: f.unidadId,
+            unidadNumero: unidad.numero,
+            descripcion: `Posible falla mecánica o error de captura en unidad ${unidad.numero}: `
+              + `rendimiento ${rendimiento} ${unidad.unidadLectura}/L vs mediana ${mediana(previos)} ${unidad.unidadLectura}/L. `
+              + 'Alerta generada automáticamente al registrar diésel.',
+            estatus: 'abierto',
+            operadorEmail: usuario.email,
+            operadorNombre: usuario.nombre,
+            createdAt: serverTimestamp(),
+          })
+        }
       })
       // solo se manda ultima_lectura: el trigger de la base rechaza cualquier otro campo cuando lo actualiza un chofer
       const { error } = await supabase.from('unidades').update({ ultima_lectura: odometro }).eq('id', f.unidadId)
@@ -131,6 +186,16 @@ function CargaDiesel({ usuario }) {
         <p className="muted tc-nota">Última lectura registrada: {unidad.ultimaLectura.toLocaleString()} {unidad.unidadLectura}</p>
       )}
       {unidad && <BadgeMantenimiento unidad={unidad} />}
+      {viajesEnCurso.length > 0 && (
+        <label className="campo"><span>Viaje en curso</span>
+          <select value={viajeId} onChange={(e) => setViajeId(e.target.value)}>
+            <option value="">Sin viaje</option>
+            {viajesEnCurso.map((v) => (
+              <option key={v.id} value={v.id}>{v.folio} · {v.origen} → {v.destino}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <label className="campo"><span>Estación de carga</span>
         <input value={f.estacion} onChange={set('estacion')} placeholder="Ej. Pemex Villa Ahumada" />
       </label>
@@ -197,7 +262,9 @@ function CargaDiesel({ usuario }) {
             {c.fecha} · {c.litros} L · {c.odometro?.toLocaleString()} {c.unidadLectura}
             {c.rendimiento != null && ` · ${c.rendimiento} ${c.unidadLectura}/L`}
             {c.estacion && ` · ${c.estacion}`}
+            {c.viajeFolio && ` · ${c.viajeFolio}`}
           </div>
+          {c.esAtipico && <span className="badge alerta">Rendimiento atípico</span>}
           {c.caja && (
             <div className="muted">Caja {c.caja.cajaNumero}: {c.caja.litros} L · {c.caja.horasTermo} hrs termo · {dinero(c.caja.costo, 'MXN')}</div>
           )}
@@ -359,7 +426,26 @@ function Rendimiento() {
   const totalLitros = r2(lista.reduce((s, c) => s + (c.litros || 0) + (c.caja?.litros || 0), 0))
   const totalCosto = r2(lista.reduce((s, c) => s + (c.costoTotal || 0) + (c.caja?.costo || 0), 0))
 
-  const trucks = unidades.filter((u) => u.tipo === 'truck' && (u.ultimosRendimientos?.length || (!fUnidad ? false : u.id === fUnidad)))
+  // ponytail: unidades ya vive en Supabase y no tiene columnas de rendimiento -- el historial
+  // (últimos 5, promedio, mediana) se deriva aquí de cargasDiesel, que sigue siendo la fuente
+  // real del dato. "cargas" ya viene ordenado desc por createdAt, así que tomar los primeros
+  // 5 por unidad alcanza sin otra consulta.
+  const statsPorUnidad = useMemo(() => {
+    const porUnidad = {}
+    for (const c of cargas ?? []) {
+      if (c.rendimiento == null) continue
+      const arr = porUnidad[c.unidadId] ?? (porUnidad[c.unidadId] = [])
+      if (arr.length < 5) arr.push(c.rendimiento)
+    }
+    return Object.fromEntries(Object.entries(porUnidad).map(([id, ultimos]) => [id, {
+      ultimos,
+      promedio: r2(ultimos.reduce((s, x) => s + x, 0) / ultimos.length),
+      mediana: mediana(ultimos),
+    }]))
+  }, [cargas])
+
+  const trucks = unidades.filter((u) => u.tipo === 'truck'
+    && (statsPorUnidad[u.id]?.ultimos.length || (!fUnidad ? false : u.id === fUnidad)))
 
   const exportar = async () => {
     const XLSX = await import('xlsx') // carga diferida: no pesar el bundle del chofer
@@ -375,8 +461,8 @@ function Rendimiento() {
     ]), 'Cargas')
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
       ['Unidad', 'Rendimiento promedio', 'Últimos rendimientos', 'Última lectura'],
-      ...unidades.filter((u) => u.rendimientoPromedio != null).map((u) => [
-        u.numero, u.rendimientoPromedio, (u.ultimosRendimientos ?? []).join(', '), u.ultimaLectura ?? '',
+      ...unidades.filter((u) => statsPorUnidad[u.id]).map((u) => [
+        u.numero, statsPorUnidad[u.id].promedio, statsPorUnidad[u.id].ultimos.join(', '), u.ultimaLectura ?? '',
       ]),
     ]), 'Rendimiento por unidad')
     XLSX.writeFile(wb, `Diesel_${desde}_a_${hasta}.xlsx`)
@@ -406,17 +492,21 @@ function Rendimiento() {
         <div className="tabla-scroll">
           <table>
             <thead>
-              <tr><th>Unidad</th><th className="num">Promedio</th><th>Últimos 5</th><th className="num">Última lectura</th></tr>
+              <tr><th>Unidad</th><th className="num">Promedio</th><th className="num">Mediana (costeo)</th><th>Últimos 5</th><th className="num">Última lectura</th></tr>
             </thead>
             <tbody>
-              {trucks.map((u) => (
-                <tr key={u.id}>
-                  <td><strong>{u.numero}</strong></td>
-                  <td className="num">{u.rendimientoPromedio != null ? `${u.rendimientoPromedio} ${u.unidadLectura}/L` : '—'}</td>
-                  <td className="muted">{(u.ultimosRendimientos ?? []).join(' · ')}</td>
-                  <td className="num">{u.ultimaLectura?.toLocaleString() ?? ''}</td>
-                </tr>
-              ))}
+              {trucks.map((u) => {
+                const s = statsPorUnidad[u.id]
+                return (
+                  <tr key={u.id}>
+                    <td><strong>{u.numero}</strong></td>
+                    <td className="num">{s ? `${s.promedio} ${u.unidadLectura}/L` : '—'}</td>
+                    <td className="num">{s?.mediana != null ? `${s.mediana} ${u.unidadLectura}/L` : '—'}</td>
+                    <td className="muted">{(s?.ultimos ?? []).join(' · ')}</td>
+                    <td className="num">{u.ultimaLectura?.toLocaleString() ?? ''}</td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -439,7 +529,9 @@ function Rendimiento() {
             {c.fecha} · {c.operadorNombre} · {c.litros} L
             {c.rendimiento != null && ` · ${c.rendimiento} ${c.unidadLectura}/L`}
             {c.estacion && ` · ${c.estacion}`}
+            {c.viajeFolio && ` · ${c.viajeFolio}`}
           </div>
+          {c.esAtipico && <span className="badge alerta">Rendimiento atípico</span>}
           {c.caja && <div className="muted">Caja {c.caja.cajaNumero}: {c.caja.litros} L · {c.caja.horasTermo} hrs</div>}
         </div>
       ))}
