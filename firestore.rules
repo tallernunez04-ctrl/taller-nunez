@@ -37,7 +37,7 @@ service cloud.firestore {
       // chofer solo actualiza lectura y rendimientos (transacción de carga de diésel)
       allow update: if activo() && rol() == 'chofer'
         && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['ultimaLectura', 'ultimosRendimientos', 'rendimientoPromedio']);
+          .hasOnly(['ultimaLectura', 'ultimosRendimientos', 'rendimientoPromedio', 'rendimientoMediana']);
     }
 
     match /cargasDiesel/{id} {
@@ -80,9 +80,41 @@ service cloud.firestore {
     }
 
     match /viajes/{id} {
-      allow write: if activo() && rol() == 'admin';
+      // el chofer del viaje es el del movimiento activo (operadorEmail legacy se
+      // mantiene sincronizado con choferActualEmail en la transacción de cambio)
+      function esChoferDelViaje() {
+        return get(/databases/$(db)/documents/viajes/$(id)).data.operadorEmail == email();
+      }
+      allow create, delete: if activo() && rol() == 'admin';
+      // un viaje no puede pasar a terminado con entregas pendientes
+      allow update: if activo() && rol() == 'admin'
+        && (request.resource.data.get('estatus', '') != 'terminado'
+            || request.resource.data.get('entregasPendientes', 0) == 0);
+      // el chofer solo decrementa el contador al marcar una entrega (transacción)
+      allow update: if activo() && rol() == 'chofer'
+        && resource.data.operadorEmail == email()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['entregasPendientes']);
       allow read: if activo() && (rol() in ['compras', 'admin']
-        || resource.data.operadorEmail == email());
+        || resource.data.operadorEmail == email()
+        || resource.data.get('choferActualEmail', '') == email());
+
+      match /entregas/{entregaId} {
+        allow read: if activo() && (rol() in ['compras', 'admin']
+          || (rol() == 'chofer' && esChoferDelViaje()));
+        allow create, delete: if activo() && rol() == 'admin';
+        // el chofer solo marca la entrega y adjunta evidencia
+        allow update: if activo() && (rol() == 'admin'
+          || (rol() == 'chofer' && esChoferDelViaje()
+              && request.resource.data.diff(resource.data).affectedKeys()
+                .hasOnly(['estatus', 'fechaHoraEntregaReal', 'evidenciaUrl'])));
+      }
+
+      match /movimientos/{movId} {
+        allow read: if activo() && (rol() in ['compras', 'admin']
+          || (rol() == 'chofer' && esChoferDelViaje()));
+        allow write: if activo() && rol() == 'admin';
+      }
     }
 
     match /empleados/{id} {
