@@ -8,6 +8,7 @@ import { supabase } from './lib/supabaseClient'
 import { mediana, esAtipico } from './costeo'
 import { BadgeMantenimiento, useUnidades, SelectorUnidad } from './compras'
 import { dinero, r2, hoy } from './utils/format'
+import { exportarXlsx } from './utils/exportarXlsx'
 
 /* Módulo Diésel: captura del chofer en ruta, rendimientos por unidad
    (array estático en el doc de la unidad, sin consultas de historial),
@@ -447,26 +448,32 @@ function Rendimiento() {
   const trucks = unidades.filter((u) => u.tipo === 'truck'
     && (statsPorUnidad[u.id]?.ultimos.length || (!fUnidad ? false : u.id === fUnidad)))
 
-  const exportar = async () => {
-    const XLSX = await import('xlsx') // carga diferida: no pesar el bundle del chofer
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Fecha', 'Unidad', 'Operador', 'Estación', 'Litros', '$/L', 'Costo', 'Odómetro', 'Rendimiento', 'Caja', 'Litros caja', 'Hrs termo', 'Costo caja', 'Notas'],
-      ...lista.map((c) => [
-        c.fecha, c.unidadNumero, c.operadorNombre, c.estacion, c.litros, c.costoLitro, c.costoTotal,
-        c.odometro, c.rendimiento ?? '', c.caja?.cajaNumero ?? '', c.caja?.litros ?? '', c.caja?.horasTermo ?? '', c.caja?.costo ?? '', c.notas || '',
-      ]),
-      [],
-      ['', '', '', 'TOTALES', totalLitros, '', totalCosto],
-    ]), 'Cargas')
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Unidad', 'Rendimiento promedio', 'Últimos rendimientos', 'Última lectura'],
-      ...unidades.filter((u) => statsPorUnidad[u.id]).map((u) => [
-        u.numero, statsPorUnidad[u.id].promedio, statsPorUnidad[u.id].ultimos.join(', '), u.ultimaLectura ?? '',
-      ]),
-    ]), 'Rendimiento por unidad')
-    XLSX.writeFile(wb, `Diesel_${desde}_a_${hasta}.xlsx`)
-  }
+  const exportar = () => exportarXlsx({
+    nombreArchivo: `Diesel_${desde}_a_${hasta}.xlsx`,
+    hojas: [
+      {
+        nombre: 'Cargas',
+        datos: [
+          ['Fecha', 'Unidad', 'Operador', 'Estación', 'Litros', '$/L', 'Costo', 'Odómetro', 'Rendimiento', 'Caja', 'Litros caja', 'Hrs termo', 'Costo caja', 'Notas'],
+          ...lista.map((c) => [
+            c.fecha, c.unidadNumero, c.operadorNombre, c.estacion, c.litros, c.costoLitro, c.costoTotal,
+            c.odometro, c.rendimiento ?? '', c.caja?.cajaNumero ?? '', c.caja?.litros ?? '', c.caja?.horasTermo ?? '', c.caja?.costo ?? '', c.notas || '',
+          ]),
+          [],
+          ['', '', '', 'TOTALES', totalLitros, '', totalCosto],
+        ],
+      },
+      {
+        nombre: 'Rendimiento por unidad',
+        datos: [
+          ['Unidad', 'Rendimiento promedio', 'Últimos rendimientos', 'Última lectura'],
+          ...unidades.filter((u) => statsPorUnidad[u.id]).map((u) => [
+            u.numero, statsPorUnidad[u.id].promedio, statsPorUnidad[u.id].ultimos.join(', '), u.ultimaLectura ?? '',
+          ]),
+        ],
+      },
+    ],
+  })
 
   return (
     <div>

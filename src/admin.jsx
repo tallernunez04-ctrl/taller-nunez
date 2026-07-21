@@ -3,11 +3,11 @@ import {
   collection, doc, getDoc, onSnapshot, orderBy, query,
   setDoc, updateDoc, where,
 } from 'firebase/firestore'
-import * as XLSX from 'xlsx'
 import { db } from './firebase'
 import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
 import { ESTATUS, METODOS, SelectorUnidad, useUnidades } from './compras'
 import { dinero, r2, hoy } from './utils/format'
+import { exportarXlsx } from './utils/exportarXlsx'
 
 const METODO_LABEL = Object.fromEntries(METODOS)
 const TIPO_LABEL = { truck: 'Truck', reefer: 'Reefer', plataforma: 'Plataforma', caja_seca: 'Caja seca' }
@@ -96,14 +96,18 @@ function exportarReporteGastos(lista, desde, hasta) {
     gi === 0 && i === 0 ? c.totalGeneralUSD : '', gi === 0 && i === 0 ? (c.notas || '') : '',
   ])))
   const totalUSD = r2(lista.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['Fecha', 'WO', 'Unidad', 'Método de pago', 'Proveedor', 'Folio', 'Moneda', 'Concepto', 'Cantidad', 'Costo unit.', 'Subtotal', 'IVA %', 'IVA $', 'Total línea', 'Total compra (USD)', 'Notas'],
-    ...filas,
-    [],
-    ['', '', '', '', '', '', '', '', '', '', '', '', '', 'TOTAL (USD)', totalUSD],
-  ]), 'Gastos')
-  XLSX.writeFile(wb, `Reporte_gastos_${desde || 'inicio'}_a_${hasta || 'hoy'}.xlsx`)
+  exportarXlsx({
+    nombreArchivo: `Reporte_gastos_${desde || 'inicio'}_a_${hasta || 'hoy'}.xlsx`,
+    hojas: [{
+      nombre: 'Gastos',
+      datos: [
+        ['Fecha', 'WO', 'Unidad', 'Método de pago', 'Proveedor', 'Folio', 'Moneda', 'Concepto', 'Cantidad', 'Costo unit.', 'Subtotal', 'IVA %', 'IVA $', 'Total línea', 'Total compra (USD)', 'Notas'],
+        ...filas,
+        [],
+        ['', '', '', '', '', '', '', '', '', '', '', '', '', 'TOTAL (USD)', totalUSD],
+      ],
+    }],
+  })
 }
 
 function GastoCard({ c, tipo }) {
@@ -205,7 +209,6 @@ function GastoCard({ c, tipo }) {
 }
 
 function exportarGasto(c, wo) {
-  const wb = XLSX.utils.book_new()
   const hoja1 = [
     ['Fecha', c.fecha],
     ['Unidad', c.unidadNumero],
@@ -227,24 +230,26 @@ function exportarGasto(c, wo) {
   hoja1.push(['', '', '', '', '', 'Subtotal general (USD)', c.subtotalGeneralUSD])
   hoja1.push(['', '', '', '', '', 'IVA general (USD)', c.ivaGeneralUSD])
   hoja1.push(['', '', '', '', '', 'TOTAL GENERAL (USD)', c.totalGeneralUSD])
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hoja1), 'Compra')
+  const hojas = [{ nombre: 'Compra', datos: hoja1 }]
   if (wo) {
-    const hoja2 = [
-      ['WO', wo.wo],
-      ['Fecha', wo.fecha],
-      ['Estatus', ESTATUS[wo.estatus]],
-      ['Unidad', wo.unidadNumero],
-      ['Lectura', wo.lectura?.valor ? `${wo.lectura.valor} ${wo.lectura.unidad}` : ''],
-      ['Chofer', wo.chofer || ''],
-      ['Mecánico', wo.mecanico || ''],
-      ['Tipos de falla', fallasTexto(wo.tipoFalla)],
-      ['Diagnóstico', wo.diagnostico || ''],
-      ['Piezas requeridas', piezasTexto(wo.piezasRequeridas)],
-      ['Notas del mecánico', wo.notasMecanico || ''],
-    ]
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(hoja2), 'Work Order')
+    hojas.push({
+      nombre: 'Work Order',
+      datos: [
+        ['WO', wo.wo],
+        ['Fecha', wo.fecha],
+        ['Estatus', ESTATUS[wo.estatus]],
+        ['Unidad', wo.unidadNumero],
+        ['Lectura', wo.lectura?.valor ? `${wo.lectura.valor} ${wo.lectura.unidad}` : ''],
+        ['Chofer', wo.chofer || ''],
+        ['Mecánico', wo.mecanico || ''],
+        ['Tipos de falla', fallasTexto(wo.tipoFalla)],
+        ['Diagnóstico', wo.diagnostico || ''],
+        ['Piezas requeridas', piezasTexto(wo.piezasRequeridas)],
+        ['Notas del mecánico', wo.notasMecanico || ''],
+      ],
+    })
   }
-  XLSX.writeFile(wb, `Gasto_${c.unidadNumero}_${c.fecha}.xlsx`)
+  exportarXlsx({ nombreArchivo: `Gasto_${c.unidadNumero}_${c.fecha}.xlsx`, hojas })
 }
 
 /* ---------- Sección Dashboard ---------- */
@@ -489,35 +494,47 @@ function WOExpandible({ wo, compras }) {
 }
 
 function exportarHistorial(unidad, wos, compras, totalUSD) {
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['Unidad', unidad.numero],
-    ['Tipo', TIPO_LABEL[unidad.tipo]],
-    ['Marca', unidad.marca || ''],
-    ['Año', unidad.anio || ''],
-    ['Modelo', unidad.modelo || ''],
-    ['VIN', unidad.vin || ''],
-    ['Unidad de lectura', unidad.unidadLectura],
-    ['Última lectura', unidad.ultimaLectura ?? ''],
-    ['Total histórico (USD)', totalUSD],
-  ]), 'Unidad')
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['WO', 'Fecha', 'Estatus', 'Mecánico', 'Chofer', 'Lectura', 'Unidad lectura', 'Tipos de falla', 'Diagnóstico', 'Piezas requeridas', 'Notas'],
-    ...wos.map((w) => [
-      w.wo, w.fecha, ESTATUS[w.estatus], w.mecanico || '', w.chofer || '',
-      w.lectura?.valor ?? '', w.lectura?.unidad ?? '',
-      fallasTexto(w.tipoFalla), w.diagnostico || '', piezasTexto(w.piezasRequeridas), w.notasMecanico || '',
-    ]),
-  ]), 'Work Orders')
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-    ['Fecha', 'WO', 'Método de pago', 'Proveedor', 'Folio', 'Moneda', 'Concepto', 'Cantidad', 'Costo unit.', 'Subtotal', 'IVA %', 'IVA $', 'Total línea', 'Total compra (USD)', 'Notas'],
-    ...compras.flatMap((c) => (c.grupos ?? []).flatMap((g, gi) => g.conceptos.map((l, i) => [
-      c.fecha, c.woNumero || 'Directa', METODO_LABEL[c.metodoPago] ?? c.metodoPago, g.proveedor, g.folioFactura || '', g.moneda,
-      l.concepto, l.cantidad, l.costoUnitario, l.subtotal, l.tasaIVA, l.iva, l.total,
-      gi === 0 && i === 0 ? c.totalGeneralUSD : '', gi === 0 && i === 0 ? (c.notas || '') : '',
-    ]))),
-  ]), 'Compras')
-  XLSX.writeFile(wb, `Historial_${unidad.numero}.xlsx`)
+  exportarXlsx({
+    nombreArchivo: `Historial_${unidad.numero}.xlsx`,
+    hojas: [
+      {
+        nombre: 'Unidad',
+        datos: [
+          ['Unidad', unidad.numero],
+          ['Tipo', TIPO_LABEL[unidad.tipo]],
+          ['Marca', unidad.marca || ''],
+          ['Año', unidad.anio || ''],
+          ['Modelo', unidad.modelo || ''],
+          ['VIN', unidad.vin || ''],
+          ['Unidad de lectura', unidad.unidadLectura],
+          ['Última lectura', unidad.ultimaLectura ?? ''],
+          ['Total histórico (USD)', totalUSD],
+        ],
+      },
+      {
+        nombre: 'Work Orders',
+        datos: [
+          ['WO', 'Fecha', 'Estatus', 'Mecánico', 'Chofer', 'Lectura', 'Unidad lectura', 'Tipos de falla', 'Diagnóstico', 'Piezas requeridas', 'Notas'],
+          ...wos.map((w) => [
+            w.wo, w.fecha, ESTATUS[w.estatus], w.mecanico || '', w.chofer || '',
+            w.lectura?.valor ?? '', w.lectura?.unidad ?? '',
+            fallasTexto(w.tipoFalla), w.diagnostico || '', piezasTexto(w.piezasRequeridas), w.notasMecanico || '',
+          ]),
+        ],
+      },
+      {
+        nombre: 'Compras',
+        datos: [
+          ['Fecha', 'WO', 'Método de pago', 'Proveedor', 'Folio', 'Moneda', 'Concepto', 'Cantidad', 'Costo unit.', 'Subtotal', 'IVA %', 'IVA $', 'Total línea', 'Total compra (USD)', 'Notas'],
+          ...compras.flatMap((c) => (c.grupos ?? []).flatMap((g, gi) => g.conceptos.map((l, i) => [
+            c.fecha, c.woNumero || 'Directa', METODO_LABEL[c.metodoPago] ?? c.metodoPago, g.proveedor, g.folioFactura || '', g.moneda,
+            l.concepto, l.cantidad, l.costoUnitario, l.subtotal, l.tasaIVA, l.iva, l.total,
+            gi === 0 && i === 0 ? c.totalGeneralUSD : '', gi === 0 && i === 0 ? (c.notas || '') : '',
+          ]))),
+        ],
+      },
+    ],
+  })
 }
 
 /* ---------- Sección Usuarios ---------- */

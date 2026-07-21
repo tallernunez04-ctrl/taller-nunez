@@ -6,6 +6,7 @@ import {
 import { db, subirArchivo } from './firebase'
 import { incBalance, useColeccion } from './compras'
 import { dinero, r2, hoy } from './utils/format'
+import { exportarXlsx } from './utils/exportarXlsx'
 
 /* Nómina interna (sin timbrado CFDI, por diseño):
    - Choferes: pago variable por viajes terminados del periodo (tabulador)
@@ -384,23 +385,24 @@ function CorteDetalle({ nomina, onVolver }) {
     } catch (e) { alert('Error: ' + e.message) }
   }
 
-  const exportar = async () => {
-    const XLSX = await import('xlsx')
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-      ['Periodo', `${nomina.periodo.del} a ${nomina.periodo.al}`, nomina.periodo.tipo],
-      ['Estatus', ESTADO_NOMINA[nomina.estatus]],
-      [],
-      ['Empleado', 'Tipo', 'Viajes', 'WOs', 'Sueldo base', 'Bonos', 'Percepciones', 'Descuento viáticos', 'Total'],
-      ...(detalles ?? []).map((d) => [
-        d.nombre, d.empleadoTipo, d.viajes.map((v) => v.folio).join(', '), d.numWOs || '',
-        d.sueldoBase, d.bonos, d.percepciones, d.descuentoViaticos, d.total,
-      ]),
-      [],
-      ['', '', '', '', '', '', '', 'TOTAL', nomina.totalGeneral],
-    ]), 'Nómina')
-    XLSX.writeFile(wb, `Nomina_${nomina.periodo.del}_a_${nomina.periodo.al}.xlsx`)
-  }
+  const exportar = () => exportarXlsx({
+    nombreArchivo: `Nomina_${nomina.periodo.del}_a_${nomina.periodo.al}.xlsx`,
+    hojas: [{
+      nombre: 'Nómina',
+      datos: [
+        ['Periodo', `${nomina.periodo.del} a ${nomina.periodo.al}`, nomina.periodo.tipo],
+        ['Estatus', ESTADO_NOMINA[nomina.estatus]],
+        [],
+        ['Empleado', 'Tipo', 'Viajes', 'WOs', 'Sueldo base', 'Bonos', 'Percepciones', 'Descuento viáticos', 'Total'],
+        ...(detalles ?? []).map((d) => [
+          d.nombre, d.empleadoTipo, d.viajes.map((v) => v.folio).join(', '), d.numWOs || '',
+          d.sueldoBase, d.bonos, d.percepciones, d.descuentoViaticos, d.total,
+        ]),
+        [],
+        ['', '', '', '', '', '', '', 'TOTAL', nomina.totalGeneral],
+      ],
+    }],
+  })
 
   return (
     <div>
