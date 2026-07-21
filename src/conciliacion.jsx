@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { collection, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from './firebase'
-import { hoy } from './taller'
-import { aUSD, dinero, r2, useTipoCambio, useUnidades } from './compras'
+import { aUSD, useTipoCambio, useUnidades } from './compras'
+import { dinero, r2, hoy } from './utils/format'
 
 /* Conciliación gerencial. Los KPIs del mes salen de /balances/{YYYY-MM}
    (1 lectura); los cruces (auditoría de litros, rentabilidad) usan queries

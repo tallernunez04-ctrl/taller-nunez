@@ -5,9 +5,9 @@ import {
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
-import { hoy } from './taller'
 import { mediana, esAtipico } from './costeo'
-import { BadgeMantenimiento, dinero, r2, useUnidades, SelectorUnidad } from './compras'
+import { BadgeMantenimiento, useUnidades, SelectorUnidad } from './compras'
+import { dinero, r2, hoy } from './utils/format'
 
 /* Módulo Diésel: captura del chofer en ruta, rendimientos por unidad
    (array estático en el doc de la unidad, sin consultas de historial),

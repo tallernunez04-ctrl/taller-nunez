@@ -5,7 +5,8 @@ import {
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
 import { supabase } from './lib/supabaseClient'
-import { FALLA_LABEL, LECTURA_LABEL, TIPOS, hoy, piezasLista } from './taller'
+import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
+import { r2, dinero, hoy } from './utils/format'
 
 export const METODOS = [
   ['efectivo', 'Efectivo'],
@@ -14,10 +15,6 @@ export const METODOS = [
   ['credito_proveedor', 'Crédito proveedor'],
 ]
 export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
-
-export const r2 = (n) => Math.round(n * 100) / 100
-export const dinero = (n, moneda) =>
-  '$' + (n || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' ' + moneda
 
 // tc = pesos por 1 USD (config/general.tipoCambioUSD). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))

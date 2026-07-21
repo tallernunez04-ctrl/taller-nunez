@@ -4,8 +4,8 @@ import {
   serverTimestamp, updateDoc, where,
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
-import { hoy } from './taller'
-import { dinero, incBalance, r2, useColeccion } from './compras'
+import { incBalance, useColeccion } from './compras'
+import { dinero, r2, hoy } from './utils/format'
 
 /* Nómina interna (sin timbrado CFDI, por diseño):
    - Choferes: pago variable por viajes terminados del periodo (tabulador)

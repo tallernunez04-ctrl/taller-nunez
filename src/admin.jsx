@@ -5,8 +5,9 @@ import {
 } from 'firebase/firestore'
 import * as XLSX from 'xlsx'
 import { db } from './firebase'
-import { FALLA_LABEL, LECTURA_LABEL, hoy, piezasLista } from './taller'
-import { ESTATUS, METODOS, SelectorUnidad, dinero, r2, useUnidades } from './compras'
+import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
+import { ESTATUS, METODOS, SelectorUnidad, useUnidades } from './compras'
+import { dinero, r2, hoy } from './utils/format'
 
 const METODO_LABEL = Object.fromEntries(METODOS)
 const TIPO_LABEL = { truck: 'Truck', reefer: 'Reefer', plataforma: 'Plataforma', caja_seca: 'Caja seca' }

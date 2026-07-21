@@ -5,6 +5,7 @@ import {
 } from 'firebase/firestore'
 import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
+import { hoy } from './utils/format'
 
 export const FALLAS = [
   ['motor', 'Motor'],
@@ -17,9 +18,6 @@ export const FALLAS = [
 export const FALLA_LABEL = Object.fromEntries(FALLAS)
 export const TIPOS = { truck: 'Trucks', reefer: 'Reefers', plataforma: 'Plataformas', caja_seca: 'Cajas Secas' }
 export const LECTURA_LABEL = { mi: 'Millaje (mi)', km: 'Kilometraje (km)', hrs: 'Horómetro (hrs)' }
-
-// fecha local YYYY-MM-DD (toISOString sería UTC y se adelanta de noche)
-export const hoy = () => new Date().toLocaleDateString('sv')
 
 // piezasRequeridas era string en docs viejos; normaliza siempre a array
 export const piezasLista = (p) => (Array.isArray(p) ? p : p ? [p] : [])

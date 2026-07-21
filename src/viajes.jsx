@@ -4,9 +4,9 @@ import {
   serverTimestamp, updateDoc, where, writeBatch,
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
-import { hoy } from './taller'
 import { mediana } from './costeo'
-import { dinero, incBalance, r2, useColeccion, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
+import { incBalance, useColeccion, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
+import { dinero, r2, hoy } from './utils/format'
 import { direccionTexto } from './catalogos'
 
 /* Módulo Viajes: operación + costeo + viáticos + cuentas por cobrar.
