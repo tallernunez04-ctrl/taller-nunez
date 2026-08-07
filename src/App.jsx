@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { onAuthStateChanged, signInWithPopup, signOut } from 'firebase/auth'
-import { doc, getDoc } from 'firebase/firestore'
-import { auth, db, provider } from './firebase'
+import { onAuthStateChanged, signInWithPopup, signOut as salirFirebase } from 'firebase/auth'
+import { supabase } from './lib/supabaseClient'
+import { auth, provider } from './firebase'
 import Taller from './taller'
 import Compras from './compras'
 import Catalogos from './catalogos'
@@ -31,6 +31,11 @@ const NAV = {
     { id: 'cuentas-pagar', label: 'Por pagar', icono: '📤', mod: 'compras' },
     { id: 'proveedores', label: 'Proveedores', icono: '🏭', mod: 'catalogos' },
   ],
+  // rol nuevo (enum Supabase: 'dispatch', nav en español "Despacho"): dueño de la operación
+  // (unidades por ahora; viajes y nómina se le asignan cuando esos módulos migren)
+  dispatch: [
+    { id: 'unidades', label: 'Unidades', icono: '🚛', mod: 'compras' },
+  ],
   admin: [
     { id: 'viajes', label: 'Viajes', icono: '🚚', mod: 'viajes' },
     { id: 'cobranza', label: 'Por cobrar', icono: '💰', mod: 'viajes' },
@@ -46,45 +51,90 @@ const NAV = {
     { id: 'usuarios', label: 'Usuarios', icono: '👤', mod: 'admin' },
   ],
 }
-const TITULO_GRUPO = { taller: 'Taller', compras: 'Compras', admin: 'Administración' }
+const TITULO_GRUPO = { taller: 'Taller', compras: 'Compras', dispatch: 'Despacho', admin: 'Administración' }
 
-// admin ve todos los módulos, agrupados por sección con separadores
-const gruposDe = (rol) =>
-  (rol === 'admin' ? ['taller', 'compras', 'admin'] : [rol]).map((r) => ({ rol: r, items: NAV[r] }))
+// admin ve todos los módulos, agrupados por sección con separadores. "unidades" vive tanto en
+// compras (solo-lectura) como en dispatch (CRUD) -- para admin se deduplica, quedándose con la
+// primera aparición (dispatch antes que compras, ya es dispatch el dueño real de la pantalla).
+const gruposDe = (rol) => {
+  if (rol !== 'admin') return [{ rol, items: NAV[rol] }]
+  const vistos = new Set()
+  return ['taller', 'dispatch', 'compras', 'admin'].map((r) => ({
+    rol: r,
+    items: NAV[r].filter((n) => {
+      if (vistos.has(n.id)) return false
+      vistos.add(n.id)
+      return true
+    }),
+  }))
+}
 const navDe = (rol) => gruposDe(rol).flatMap((g) => g.items)
 
 export default function App() {
   const [estado, setEstado] = useState('cargando') // cargando | anonimo | no_autorizado | listo
-  const [usuario, setUsuario] = useState(null) // doc de usuarios/{email}
+  const [usuario, setUsuario] = useState(null) // { email, nombre, rol } -- misma forma que usaba el doc de usuarios/{email}
   const [vista, setVista] = useState(null)
   const [error, setError] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
   const [colapsado, setColapsado] = useState(() => localStorage.getItem('sidebarColapsado') === '1')
+  // firestore.rules autoriza con la sesión de Firebase Auth (request.auth), no con la de
+  // Supabase -- mientras los datos de negocio sigan en Firestore hace falta mantener ambas
+  // sesiones vivas en paralelo. null = todavía sin checar, false = falta conectar, true = ok.
+  const [firebaseListo, setFirebaseListo] = useState(null)
+  const [errorFirebase, setErrorFirebase] = useState('')
 
-  useEffect(() => onAuthStateChanged(auth, async (u) => {
-    if (!u) {
-      setUsuario(null)
-      setEstado('anonimo')
-      return
-    }
-    try {
-      const snap = await getDoc(doc(db, 'usuarios', u.email))
-      if (!snap.exists() || snap.data().activo !== true) {
-        setEstado('no_autorizado')
+  useEffect(() => onAuthStateChanged(auth, (u) => setFirebaseListo(!!u)), [])
+
+  const conectarFirebase = () => {
+    setErrorFirebase('')
+    signInWithPopup(auth, provider).catch((e) => setErrorFirebase(e.message))
+  }
+
+  useEffect(() => {
+    const cargarPerfil = async (session) => {
+      if (!session) {
+        setUsuario(null)
+        setEstado('anonimo')
         return
       }
-      const datos = snap.data()
-      setUsuario(datos)
-      setVista(navDe(datos.rol)[0].id)
-      setEstado('listo')
-    } catch (e) {
-      console.error(e)
-      setError(e.message)
-      setEstado('no_autorizado')
+      try {
+        const { data, error: err } = await supabase
+          .from('perfiles')
+          .select('email, nombre, rol, activo')
+          .eq('id', session.user.id)
+          .single()
+        if (err || !data || data.activo !== true) {
+          setEstado('no_autorizado')
+          return
+        }
+        setUsuario(data)
+        setVista(navDe(data.rol)[0].id)
+        setEstado('listo')
+      } catch (e) {
+        console.error(e)
+        setError(e.message)
+        setEstado('no_autorizado')
+      }
     }
-  }), [])
 
-  const entrar = () => signInWithPopup(auth, provider).catch((e) => setError(e.message))
-  const salir = () => signOut(auth)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_evento, session) => {
+      cargarPerfil(session)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const entrar = (e) => {
+    e.preventDefault()
+    setError('')
+    supabase.auth.signInWithPassword({ email, password }).then(({ error: err }) => {
+      if (err) setError(err.message)
+    })
+  }
+  const salir = () => {
+    supabase.auth.signOut()
+    salirFirebase(auth)
+  }
   const toggleSidebar = () => {
     localStorage.setItem('sidebarColapsado', colapsado ? '0' : '1')
     setColapsado(!colapsado)
@@ -100,7 +150,25 @@ export default function App() {
         <img src="/logo-nunez.png" alt="Taller Nuñez" className="logo logo-login" />
         <h1 className="marca">Taller <span>Nuñez</span></h1>
         <p className="muted">Gestión de taller mecánico</p>
-        <button className="btn-primario" onClick={entrar}>Iniciar sesión con Google</button>
+        <form className="form-login" onSubmit={entrar}>
+          <input
+            type="email"
+            placeholder="Correo"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            autoComplete="email"
+            required
+          />
+          <input
+            type="password"
+            placeholder="Contraseña"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+          <button type="submit" className="btn-primario">Iniciar sesión</button>
+        </form>
         {error && <p className="error">{error}</p>}
       </div>
     )
@@ -112,6 +180,20 @@ export default function App() {
         <h1 className="marca">Taller <span>Nuñez</span></h1>
         <p className="error">Acceso no autorizado — contacta al administrador</p>
         <button className="btn-secundario" onClick={salir}>Usar otra cuenta</button>
+      </div>
+    )
+  }
+
+  // paso intermedio: los datos siguen en Firestore, que autoriza con la sesión de Firebase.
+  // Es un solo click por dispositivo -- Firebase mantiene la sesión entre recargas.
+  if (firebaseListo !== true) {
+    return (
+      <div className="pantalla-centrada">
+        <h1 className="marca">Taller <span>Nuñez</span></h1>
+        <p className="muted">Falta un paso: conecta tu cuenta de Google para acceder a los datos</p>
+        <button className="btn-primario" onClick={conectarFirebase}>Conectar con Google</button>
+        {errorFirebase && <p className="error">{errorFirebase}</p>}
+        <button className="btn-secundario" onClick={salir}>Salir</button>
       </div>
     )
   }

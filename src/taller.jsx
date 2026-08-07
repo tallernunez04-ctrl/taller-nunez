@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  collection, doc, getDocs, onSnapshot, query, runTransaction,
+  collection, doc, onSnapshot, query, runTransaction,
   serverTimestamp, updateDoc, where,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { supabase } from './lib/supabaseClient'
 
 export const FALLAS = [
   ['motor', 'Motor'],
@@ -90,12 +91,14 @@ function WOForm({ usuario, wo, onDone }) {
   const sucio = JSON.stringify(f) !== original
 
   useEffect(() => {
-    getDocs(collection(db, 'unidades'))
-      .then((s) => setUnidades(
-        s.docs.map((d) => ({ id: d.id, ...d.data() }))
+    supabase.from('unidades').select('id, numero, tipo, unidad_lectura').then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setUnidades(
+        data
+          .map((u) => ({ id: u.id, numero: u.numero, tipo: u.tipo, unidadLectura: u.unidad_lectura }))
           .sort((a, b) => a.numero.localeCompare(b.numero, undefined, { numeric: true })),
-      ))
-      .catch(console.error)
+      )
+    })
   }, [])
 
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })

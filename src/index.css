@@ -45,6 +45,7 @@ h1, h2 { margin: 0 0 0.5rem; }
 }
 .pantalla-centrada .marca { font-size: 2rem; }
 .logo-login { height: 80px; margin-bottom: 0.5rem; }
+.form-login { display: flex; flex-direction: column; gap: 0.65rem; width: 100%; max-width: 320px; }
 
 button {
   font: inherit;
