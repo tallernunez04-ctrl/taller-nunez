@@ -4,6 +4,7 @@ import {
   serverTimestamp, updateDoc, where,
 } from 'firebase/firestore'
 import { db } from './firebase'
+import { supabase } from './lib/supabaseClient'
 import { hoy } from './taller'
 import { BadgeMantenimiento, dinero, r2, useUnidades, SelectorUnidad } from './compras'
 
@@ -73,21 +74,13 @@ function CargaDiesel({ usuario }) {
     setGuardando(true)
     try {
       const caja = unidades.find((u) => u.id === f.cajaId)
+      // rendimiento = distancia recorrida desde la última carga / litros
+      // ponytail: unidades ya vive en Supabase, cargasDiesel sigue en Firestore -- no hay
+      // transacción cruzada posible entre las dos bases.
+      const rendimiento = (unidad.ultimaLectura != null && odometro > unidad.ultimaLectura)
+        ? r2((odometro - unidad.ultimaLectura) / litros)
+        : null
       await runTransaction(db, async (tx) => {
-        const uRef = doc(db, 'unidades', f.unidadId)
-        const uSnap = await tx.get(uRef)
-        const u = uSnap.data()
-        // rendimiento = distancia recorrida desde la última carga / litros
-        const rendimiento = (u.ultimaLectura != null && odometro > u.ultimaLectura)
-          ? r2((odometro - u.ultimaLectura) / litros)
-          : null
-        const ultimosRendimientos = rendimiento != null
-          ? [...(u.ultimosRendimientos ?? []), rendimiento].slice(-5)
-          : (u.ultimosRendimientos ?? [])
-        const rendimientoPromedio = ultimosRendimientos.length
-          ? r2(ultimosRendimientos.reduce((s, x) => s + x, 0) / ultimosRendimientos.length)
-          : null
-        tx.update(uRef, { ultimaLectura: odometro, ultimosRendimientos, rendimientoPromedio })
         tx.set(doc(collection(db, 'cargasDiesel')), {
           fecha: hoy(),
           unidadId: f.unidadId,
@@ -110,6 +103,9 @@ function CargaDiesel({ usuario }) {
           createdAt: serverTimestamp(),
         })
       })
+      // solo se manda ultima_lectura: el trigger de la base rechaza cualquier otro campo cuando lo actualiza un chofer
+      const { error } = await supabase.from('unidades').update({ ultima_lectura: odometro }).eq('id', f.unidadId)
+      if (error) throw error
       alert('Carga registrada')
       setF(cargaVacia())
     } catch (e) {

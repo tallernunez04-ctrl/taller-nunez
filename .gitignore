@@ -3,3 +3,5 @@ dist
 dev-dist
 .env
 .env.local
+serviceAccount.json
+serviceAccount.json.json

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
-  collection, doc, getDoc, increment, onSnapshot, orderBy, query, runTransaction,
+  collection, doc, increment, onSnapshot, orderBy, query, runTransaction,
   serverTimestamp, setDoc, updateDoc, where,
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
+import { supabase } from './lib/supabaseClient'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, hoy, piezasLista } from './taller'
 
 export const METODOS = [
@@ -44,13 +45,36 @@ export function BadgeMantenimiento({ unidad }) {
     : <span className="badge alerta">Mantenimiento en {restante.toLocaleString()} {unidad.unidadLectura}</span>
 }
 
+// mapea columnas snake_case de Supabase a la forma camelCase que ya esperaba el resto de la app (ex-Firestore)
+const mapUnidad = (u) => ({
+  id: u.id,
+  numero: u.numero,
+  tipo: u.tipo,
+  unidadLectura: u.unidad_lectura,
+  marca: u.marca,
+  modelo: u.modelo,
+  vin: u.vin,
+  anio: u.anio,
+  ultimaLectura: u.ultima_lectura,
+  mantenimientoCadaX: u.mantenimiento_cada_x,
+  ultimoMantenimientoKm: u.ultimo_mantenimiento_km,
+  activo: u.activo,
+})
+
 export function useUnidades() {
   const [unidades, setUnidades] = useState([])
-  useEffect(() => onSnapshot(collection(db, 'unidades'), (s) =>
-    setUnidades(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => a.numero.localeCompare(b.numero, undefined, { numeric: true })),
-    ), console.error), [])
+  useEffect(() => {
+    const cargar = () => supabase.from('unidades').select('*').then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setUnidades(data.map(mapUnidad).sort((a, b) => a.numero.localeCompare(b.numero, undefined, { numeric: true })))
+    })
+    cargar()
+    const canal = supabase
+      .channel('unidades-cambios')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'unidades' }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [])
   return unidades
 }
 
@@ -98,7 +122,8 @@ export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
 
 export default function Compras({ usuario, vista }) {
   if (vista === 'nueva-compra') return <CompraForm usuario={usuario} />
-  if (vista === 'unidades') return <Unidades />
+  // también se monta desde el grupo de nav "dispatch"; compras solo puede consultar, no editar
+  if (vista === 'unidades') return <Unidades soloLectura={usuario.rol === 'compras'} />
   if (vista === 'cuentas-pagar') return <CuentasPorPagar />
   return <WorkOrders usuario={usuario} />
 }
@@ -592,11 +617,11 @@ function CompraForm({ usuario, wo, onDone }) {
 
 /* ---------- Sección 3: Unidades ---------- */
 
-function Unidades() {
+function Unidades({ soloLectura }) {
   const unidades = useUnidades()
   const [editando, setEditando] = useState(null) // objeto unidad | 'nueva' | null
 
-  if (editando) {
+  if (editando && !soloLectura) {
     return (
       <UnidadForm
         unidad={editando === 'nueva' ? null : editando}
@@ -613,34 +638,40 @@ function Unidades() {
         return grupo.length > 0 && (
           <div key={tipo}>
             <h3>{label}</h3>
-            {grupo.map((u) => (
-              <button key={u.id} className="tarjeta" onClick={() => setEditando(u)}>
-                <div className="tarjeta-top">
-                  <strong>{u.numero}</strong>
-                  <span className="muted">
-                    {u.ultimaLectura != null ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura}` : LECTURA_LABEL[u.unidadLectura]}
-                  </span>
-                </div>
-                {(u.marca || u.anio || u.modelo) && (
-                  <div className="muted">{[u.marca, u.anio, u.modelo].filter(Boolean).join(' ')}</div>
-                )}
-                <BadgeMantenimiento unidad={u} />
-              </button>
-            ))}
+            {grupo.map((u) => {
+              const Tarjeta = soloLectura ? 'div' : 'button'
+              return (
+                <Tarjeta key={u.id} className="tarjeta" onClick={soloLectura ? undefined : () => setEditando(u)}>
+                  <div className="tarjeta-top">
+                    <strong>{u.numero}</strong>
+                    <span className="muted">
+                      {u.ultimaLectura != null ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura}` : LECTURA_LABEL[u.unidadLectura]}
+                    </span>
+                  </div>
+                  {(u.marca || u.anio || u.modelo) && (
+                    <div className="muted">{[u.marca, u.anio, u.modelo].filter(Boolean).join(' ')}</div>
+                  )}
+                  <BadgeMantenimiento unidad={u} />
+                </Tarjeta>
+              )
+            })}
           </div>
         )
       })}
-      <button className="fab" onClick={() => setEditando('nueva')} aria-label="Agregar unidad">+</button>
+      {!soloLectura && (
+        <button className="fab" onClick={() => setEditando('nueva')} aria-label="Agregar unidad">+</button>
+      )}
     </div>
   )
 }
 
 function UnidadForm({ unidad, onDone }) {
+  // Supabase manda null en los campos opcionales sin capturar -- un input controlado no acepta
+  // null como value, y Number(null) === 0 se colaría al guardar violando el check de anio.
   const [f, setF] = useState(() => ({
-    numero: '', tipo: 'truck', unidadLectura: 'mi',
-    marca: '', anio: '', modelo: '', vin: '',
-    mantenimientoCadaX: '', ultimoMantenimientoKm: '',
-    ...unidad,
+    numero: unidad?.numero ?? '', tipo: unidad?.tipo ?? 'truck', unidadLectura: unidad?.unidadLectura ?? 'mi',
+    marca: unidad?.marca ?? '', anio: unidad?.anio ?? '', modelo: unidad?.modelo ?? '', vin: unidad?.vin ?? '',
+    mantenimientoCadaX: unidad?.mantenimientoCadaX ?? '', ultimoMantenimientoKm: unidad?.ultimoMantenimientoKm ?? '',
   }))
   const [guardando, setGuardando] = useState(false)
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
@@ -649,26 +680,26 @@ function UnidadForm({ unidad, onDone }) {
     setGuardando(true)
     try {
       if (unidad) {
-        await updateDoc(doc(db, 'unidades', unidad.id), {
-          marca: f.marca, anio: f.anio, modelo: f.modelo, vin: f.vin,
-          unidadLectura: f.unidadLectura,
-          mantenimientoCadaX: Number(f.mantenimientoCadaX) || 0,
-          ultimoMantenimientoKm: Number(f.ultimoMantenimientoKm) || 0,
-        })
+        const { error } = await supabase.from('unidades').update({
+          marca: f.marca, anio: f.anio === '' ? null : Number(f.anio), modelo: f.modelo, vin: f.vin,
+          unidad_lectura: f.unidadLectura,
+          mantenimiento_cada_x: Number(f.mantenimientoCadaX) || 0,
+          ultimo_mantenimiento_km: Number(f.ultimoMantenimientoKm) || 0,
+        }).eq('id', unidad.id)
+        if (error) throw error
       } else {
         const numero = f.numero.trim().toUpperCase()
         if (!numero) { alert('Escribe el número de unidad'); return }
-        const ref = doc(db, 'unidades', numero)
-        if ((await getDoc(ref)).exists()) { alert(`Ya existe la unidad ${numero}`); return }
-        await setDoc(ref, {
-          numero, tipo: f.tipo, unidadLectura: f.unidadLectura,
-          ultimaLectura: null,
-          ultimosRendimientos: [], rendimientoPromedio: null,
-          mantenimientoCadaX: Number(f.mantenimientoCadaX) || 0,
-          ultimoMantenimientoKm: Number(f.ultimoMantenimientoKm) || 0,
-          marca: f.marca, anio: f.anio, modelo: f.modelo, vin: f.vin,
-          createdAt: serverTimestamp(),
+        const { error } = await supabase.from('unidades').insert({
+          numero, tipo: f.tipo, unidad_lectura: f.unidadLectura,
+          mantenimiento_cada_x: Number(f.mantenimientoCadaX) || 0,
+          ultimo_mantenimiento_km: Number(f.ultimoMantenimientoKm) || 0,
+          marca: f.marca, anio: f.anio === '' ? null : Number(f.anio), modelo: f.modelo, vin: f.vin,
         })
+        if (error) {
+          if (error.code === '23505') { alert(`Ya existe la unidad ${numero}`); return }
+          throw error
+        }
       }
       onDone()
     } catch (e) {

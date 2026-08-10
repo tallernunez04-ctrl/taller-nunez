@@ -13,6 +13,10 @@ const firebaseConfig = {
 }
 
 const app = initializeApp(firebaseConfig)
+// El login "de verdad" es Supabase Auth (ver App.jsx), pero firestore.rules autoriza
+// con request.auth de Firebase -- mientras los datos de negocio sigan en Firestore
+// la app mantiene esta sesión de Firebase en paralelo, solo para que Firestore
+// siga autorizando lecturas/escrituras.
 export const auth = getAuth(app)
 export const provider = new GoogleAuthProvider()
 export const db = getFirestore(app)
