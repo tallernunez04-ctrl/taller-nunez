@@ -69,8 +69,11 @@ export function useUnidades() {
       setUnidades(data.map(mapUnidad).sort((a, b) => a.numero.localeCompare(b.numero, undefined, { numeric: true })))
     })
     cargar()
+    // nombre único por instancia: dos componentes montados a la vez (ej. WorkOrders +
+    // CompraForm) no pueden compartir un canal ya suscrito -- .on() después de .subscribe()
+    // en el mismo canal tira excepción y tumba el render entero (sin Error Boundary).
     const canal = supabase
-      .channel('unidades-cambios')
+      .channel(`unidades-cambios-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'unidades' }, cargar)
       .subscribe()
     return () => supabase.removeChannel(canal)
