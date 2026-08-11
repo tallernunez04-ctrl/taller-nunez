@@ -31,14 +31,14 @@ const NAV = {
     { id: 'cuentas-pagar', label: 'Por pagar', icono: '📤', mod: 'compras' },
     { id: 'proveedores', label: 'Proveedores', icono: '🏭', mod: 'catalogos' },
   ],
-  // rol nuevo (enum Supabase: 'dispatch', nav en español "Despacho"): dueño de la operación
-  // (unidades por ahora; viajes y nómina se le asignan cuando esos módulos migren)
+  // rol nuevo (enum Supabase: 'dispatch', nav en español "Despacho"): dueño de la operación.
+  // Viajes ya migró a Supabase (RLS de dispatch aplicada) -- Nómina se le asigna cuando migre.
   dispatch: [
+    { id: 'viajes', label: 'Viajes', icono: '🚚', mod: 'viajes' },
+    { id: 'cobranza', label: 'Por cobrar', icono: '💰', mod: 'viajes' },
     { id: 'unidades', label: 'Unidades', icono: '🚛', mod: 'compras' },
   ],
   admin: [
-    { id: 'viajes', label: 'Viajes', icono: '🚚', mod: 'viajes' },
-    { id: 'cobranza', label: 'Por cobrar', icono: '💰', mod: 'viajes' },
     { id: 'gastos', label: 'Gastos', icono: '💵', mod: 'admin' },
     { id: 'dashboard', label: 'Dashboard', icono: '📊', mod: 'admin' },
     { id: 'detalle-unidad', label: 'Detalle por Unidad', icono: '🔍', mod: 'admin' },
@@ -101,7 +101,7 @@ export default function App() {
       try {
         const { data, error: err } = await supabase
           .from('perfiles')
-          .select('email, nombre, rol, activo')
+          .select('id, email, nombre, rol, activo')
           .eq('id', session.user.id)
           .single()
         if (err || !data || data.activo !== true) {

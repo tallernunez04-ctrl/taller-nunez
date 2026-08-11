@@ -17,19 +17,7 @@ service cloud.firestore {
       allow write: if activo() && rol() == 'admin';
     }
 
-    match /workOrders/{id} {
-      allow create: if activo() && (rol() == 'admin'
-        || (rol() == 'taller' && request.resource.data.creadoPor == email()));
-      allow update: if activo() && (rol() == 'admin'
-        || (rol() == 'taller' && resource.data.creadoPor == email()
-            && resource.data.estatus == 'en_proceso'));
-      allow read: if activo() && (rol() in ['compras', 'admin']
-        || (rol() == 'taller' && resource.data.creadoPor == email()));
-    }
-
-    match /compras/{id} {
-      allow read, write: if activo() && rol() in ['compras', 'admin'];
-    }
+    // workOrders y compras(+conceptos) migraron a Supabase (RLS)
 
     match /unidades/{id} {
       allow read: if activo();
@@ -43,8 +31,10 @@ service cloud.firestore {
     match /cargasDiesel/{id} {
       allow create: if activo() && (rol() == 'admin'
         || (rol() == 'chofer' && request.resource.data.operadorEmail == email()));
-      allow read: if activo() && (rol() in ['taller', 'compras', 'admin']
-        || (rol() == 'chofer' && resource.data.operadorEmail == email()));
+      // chofer necesita el historial de rendimiento de la unidad (no solo lo propio) para
+      // detectar atípicos al cargar diésel -- una consulta por unidadId no puede acotarse
+      // a operadorEmail, así que el read es igual de amplio que taller/compras.
+      allow read: if activo() && rol() in ['chofer', 'taller', 'compras', 'admin'];
     }
 
     match /reportesFalla/{id} {
@@ -55,67 +45,9 @@ service cloud.firestore {
       allow update: if activo() && rol() in ['taller', 'admin'];
     }
 
-    match /operadores/{id} {
-      allow read: if activo();
-      allow write: if activo() && rol() == 'admin';
-    }
+    // operadores, clientes(+direcciones), proveedores y tabuladores migraron a Supabase (RLS)
 
-    match /clientes/{id} {
-      allow read: if activo();
-      allow write: if activo() && rol() == 'admin';
-      match /direcciones/{dirId} {
-        allow read: if activo();
-        allow write: if activo() && rol() == 'admin';
-      }
-    }
-
-    match /proveedores/{id} {
-      allow read: if activo();
-      allow write: if activo() && rol() in ['compras', 'admin'];
-    }
-
-    match /tabuladores/{id} {
-      allow read: if activo();
-      allow write: if activo() && rol() == 'admin';
-    }
-
-    match /viajes/{id} {
-      // el chofer del viaje es el del movimiento activo (operadorEmail legacy se
-      // mantiene sincronizado con choferActualEmail en la transacción de cambio)
-      function esChoferDelViaje() {
-        return get(/databases/$(db)/documents/viajes/$(id)).data.operadorEmail == email();
-      }
-      allow create, delete: if activo() && rol() == 'admin';
-      // un viaje no puede pasar a terminado con entregas pendientes
-      allow update: if activo() && rol() == 'admin'
-        && (request.resource.data.get('estatus', '') != 'terminado'
-            || request.resource.data.get('entregasPendientes', 0) == 0);
-      // el chofer solo decrementa el contador al marcar una entrega (transacción)
-      allow update: if activo() && rol() == 'chofer'
-        && resource.data.operadorEmail == email()
-        && request.resource.data.diff(resource.data).affectedKeys()
-          .hasOnly(['entregasPendientes']);
-      allow read: if activo() && (rol() in ['compras', 'admin']
-        || resource.data.operadorEmail == email()
-        || resource.data.get('choferActualEmail', '') == email());
-
-      match /entregas/{entregaId} {
-        allow read: if activo() && (rol() in ['compras', 'admin']
-          || (rol() == 'chofer' && esChoferDelViaje()));
-        allow create, delete: if activo() && rol() == 'admin';
-        // el chofer solo marca la entrega y adjunta evidencia
-        allow update: if activo() && (rol() == 'admin'
-          || (rol() == 'chofer' && esChoferDelViaje()
-              && request.resource.data.diff(resource.data).affectedKeys()
-                .hasOnly(['estatus', 'fechaHoraEntregaReal', 'evidenciaUrl'])));
-      }
-
-      match /movimientos/{movId} {
-        allow read: if activo() && (rol() in ['compras', 'admin']
-          || (rol() == 'chofer' && esChoferDelViaje()));
-        allow write: if activo() && rol() == 'admin';
-      }
-    }
+    // viajes(+entregas+movimientos) migraron a Supabase (RLS + RPCs de custodia)
 
     match /empleados/{id} {
       allow read, write: if activo() && rol() == 'admin';
@@ -137,12 +69,6 @@ service cloud.firestore {
     match /config/{id} {
       allow read: if activo();
       allow write: if activo() && rol() == 'admin';
-      // taller necesita incrementar ultimoWO (transacción de numeración), nada más
-      allow update: if activo() && rol() == 'taller'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoWO']);
-      // compras solo incrementa el folio de PO
-      allow update: if activo() && rol() == 'compras'
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['ultimoPO']);
     }
   }
 }

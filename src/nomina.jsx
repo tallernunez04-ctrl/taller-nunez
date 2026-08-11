@@ -4,7 +4,10 @@ import {
   serverTimestamp, updateDoc, where,
 } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
-import { incBalance, useColeccion } from './compras'
+import { supabase } from './lib/supabaseClient'
+import { incBalance, mapWO, SELECT_WO, useColeccion } from './compras'
+import { useOperadores } from './catalogos'
+import { mapViaje, SELECT_VIAJE } from './viajes'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
 
@@ -176,7 +179,7 @@ function Cortes() {
 }
 
 function NuevoCorte({ onDone }) {
-  const operadores = useColeccion('operadores') ?? []
+  const operadores = useOperadores() ?? []
   const empleados = useColeccion('empleados') ?? []
   const [tipo, setTipo] = useState('semanal')
   const [del, setDel] = useState(hace7())
@@ -187,16 +190,17 @@ function NuevoCorte({ onDone }) {
   const calcular = async () => {
     try {
       // viajes terminados del periodo que aún no entran a ninguna nómina
-      const viajesSnap = await getDocs(query(collection(db, 'viajes'), where('estatus', '==', 'terminado')))
-      const viajes = viajesSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .filter((v) => !v.nominaId && v.fecha >= del && v.fecha <= al)
+      const { data: viajesData, error: errViajes } = await supabase.from('viajes').select(SELECT_VIAJE)
+        .eq('estatus', 'terminado').gte('fecha', del).lte('fecha', al)
+      if (errViajes) throw errViajes
+      const viajes = viajesData.map((v) => mapViaje(v))
       // WOs completadas del periodo (bonos de mecánicos)
-      const wosSnap = await getDocs(query(collection(db, 'workOrders'), where('estatus', '==', 'completado')))
-      const wos = wosSnap.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .filter((w) => {
-          const f = w.completadoAt?.toDate?.()?.toLocaleDateString('sv') ?? ''
-          return f >= del && f <= al
-        })
+      const { data: wosData, error: errWos } = await supabase.from('work_orders').select(SELECT_WO).eq('estatus', 'completado')
+      if (errWos) throw errWos
+      const wos = wosData.map(mapWO).filter((w) => {
+        const f = w.completadoAt ? new Date(w.completadoAt).toLocaleDateString('sv') : ''
+        return f >= del && f <= al
+      })
 
       const factor = tipo === 'quincenal' ? 2 : 1 // ponytail: quincena = 2 semanas; ajustar si pagan por día
       const detalles = []
@@ -249,14 +253,19 @@ function NuevoCorte({ onDone }) {
     if (!confirm('¿Guardar el corte de nómina? Los viajes incluidos quedarán conciliados y no podrán pagarse en otro corte.')) return
     setGuardando(true)
     try {
+      const viajeIds = preview.flatMap((d) => d.viajes.map((v) => v.id))
+      // nominas/detalles siguen en Firestore (módulo aparte); viajes ya vive en Supabase --
+      // no hay transacción cruzada entre las dos bases, se re-verifica antes en vez de dentro.
+      // ojo: nomina_id de viajes no se toca (tiene FK a nominas de Supabase, que sigue vacía
+      // hasta que Nómina migre) -- "conciliado" ya excluye el viaje de futuros cortes.
+      if (viajeIds.length) {
+        const { data: yaConciliados, error: errCheck } = await supabase.from('viajes')
+          .select('folio').in('id', viajeIds).neq('estatus', 'terminado')
+        if (errCheck) throw errCheck
+        if (yaConciliados.length) throw new Error(`El viaje ${yaConciliados[0].folio} ya está en otra nómina`)
+      }
       const nominaRef = doc(collection(db, 'nominas'))
       await runTransaction(db, async (tx) => {
-        // re-verificar dentro de la transacción que ningún viaje ya fue liquidado
-        const viajeIds = preview.flatMap((d) => d.viajes.map((v) => v.id))
-        for (const vid of viajeIds) {
-          const snap = await tx.get(doc(db, 'viajes', vid))
-          if (snap.data()?.nominaId) throw new Error(`El viaje ${snap.data().folio} ya está en otra nómina`)
-        }
         tx.set(nominaRef, {
           periodo: { del, al, tipo },
           estatus: 'calculada',
@@ -267,10 +276,12 @@ function NuevoCorte({ onDone }) {
         for (const d of preview) {
           tx.set(doc(collection(db, 'nominas', nominaRef.id, 'detalles')), d)
         }
-        for (const vid of viajeIds) {
-          tx.update(doc(db, 'viajes', vid), { nominaId: nominaRef.id, estatus: 'conciliado' })
-        }
       })
+      if (viajeIds.length) {
+        const { error: errConciliar } = await supabase.from('viajes')
+          .update({ estatus: 'conciliado' }).in('id', viajeIds).eq('estatus', 'terminado')
+        if (errConciliar) throw errConciliar
+      }
       onDone()
     } catch (e) {
       console.error(e)

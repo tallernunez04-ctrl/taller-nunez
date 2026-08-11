@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react'
-import {
-  collection, doc, getDoc, onSnapshot, orderBy, query,
-  setDoc, updateDoc, where,
-} from 'firebase/firestore'
+import { doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
 import { db } from './firebase'
+import { supabase } from './lib/supabaseClient'
 import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
-import { ESTATUS, METODOS, SelectorUnidad, useUnidades } from './compras'
+import {
+  ESTATUS, mapCompra, mapWO, METODOS, SELECT_COMPRA, SELECT_WO, SelectorUnidad, useTabla, useUnidades,
+} from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
 
@@ -32,19 +32,13 @@ export default function Admin({ vista }) {
 /* ---------- Sección Gastos ---------- */
 
 function Gastos() {
-  const [compras, setCompras] = useState(null)
   const [desde, setDesde] = useState(haceUnMes())
   const [hasta, setHasta] = useState(hoy())
   const [fUnidad, setFUnidad] = useState('')
   const [fMoneda, setFMoneda] = useState('')
   const unidades = useUnidades()
   const tipoDe = Object.fromEntries(unidades.map((u) => [u.id, u.tipo]))
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'compras'), orderBy('createdAt', 'desc')),
-    (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [])
+  const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).order('created_at', { ascending: false }))
 
   const lista = (compras ?? []).filter((c) =>
     (!desde || c.fecha >= desde) && (!hasta || c.fecha <= hasta)
@@ -116,8 +110,8 @@ function GastoCard({ c, tipo }) {
 
   useEffect(() => {
     if (abierto && c.woId && !wo) {
-      getDoc(doc(db, 'workOrders', c.woId))
-        .then((s) => s.exists() && setWo({ id: s.id, ...s.data() }))
+      supabase.from('work_orders').select(SELECT_WO).eq('id', c.woId).single()
+        .then(({ data, error }) => { if (!error && data) setWo(mapWO(data)) })
         .catch(console.error)
     }
   }, [abierto, c.woId, wo])
@@ -256,16 +250,12 @@ function exportarGasto(c, wo) {
 
 function Dashboard() {
   const [mes, setMes] = useState(mesActual())
-  const [compras, setCompras] = useState([])
-  const [wos, setWos] = useState([])
   const [tcInput, setTcInput] = useState('')
   const [dieselInput, setDieselInput] = useState('')
   const unidades = useUnidades()
+  const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA)) ?? []
+  const wos = useTabla('work_orders', mapWO, (q) => q.select(SELECT_WO)) ?? []
 
-  useEffect(() => onSnapshot(collection(db, 'compras'),
-    (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
-  useEffect(() => onSnapshot(collection(db, 'workOrders'),
-    (s) => setWos(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
   useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => {
     setTcInput(String(s.data()?.tipoCambioUSD ?? ''))
     setDieselInput(String(s.data()?.precioDieselLitro ?? ''))
@@ -274,7 +264,7 @@ function Dashboard() {
   const comprasMes = compras.filter((c) => (c.fecha || '').startsWith(mes))
   const wosCompletadas = wos.filter((w) =>
     w.estatus === 'completado'
-    && (w.completadoAt?.toDate?.()?.toLocaleDateString('sv') ?? '').startsWith(mes))
+    && (w.completadoAt ? new Date(w.completadoAt).toLocaleDateString('sv') : '').startsWith(mes))
 
   // cada compra ya trae su totalGeneralUSD consolidado desde el formulario
   const totalUSD = r2(comprasMes.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
@@ -385,14 +375,15 @@ function DetalleUnidad() {
   const unidad = unidades.find((u) => u.id === unidadId)
 
   useEffect(() => {
-    if (!unidadId) return undefined
-    const un1 = onSnapshot(query(collection(db, 'workOrders'), where('unidadId', '==', unidadId)),
-      (s) => setWos(s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))),
-      console.error)
-    const un2 = onSnapshot(query(collection(db, 'compras'), where('unidadId', '==', unidadId)),
-      (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''))),
-      console.error)
-    return () => { un1(); un2() }
+    if (!unidadId) { setWos([]); setCompras([]); return }
+    supabase.from('work_orders').select(SELECT_WO).eq('unidad_id', unidadId).then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setWos(data.map(mapWO).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')))
+    })
+    supabase.from('compras').select(SELECT_COMPRA).eq('unidad_id', unidadId).then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setCompras(data.map(mapCompra).sort((a, b) => (b.fecha || '').localeCompare(a.fecha || '')))
+    })
   }, [unidadId])
 
   const totalUSD = r2(compras.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
@@ -541,11 +532,20 @@ function exportarHistorial(unidad, wos, compras, totalUSD) {
 
 function Usuarios() {
   const [usuarios, setUsuarios] = useState(null)
-  const [editando, setEditando] = useState(null) // doc usuario | 'nuevo' | null
+  const [editando, setEditando] = useState(null) // fila perfiles | 'nuevo' | null
 
-  useEffect(() => onSnapshot(collection(db, 'usuarios'),
-    (s) => setUsuarios(s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((u) => u.oculto !== true)),
-    console.error), [])
+  useEffect(() => {
+    const cargar = () => supabase.from('perfiles').select('*').then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setUsuarios(data.filter((u) => u.oculto !== true))
+    })
+    cargar()
+    const canal = supabase
+      .channel(`perfiles-cambios-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'perfiles' }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [])
 
   if (editando) {
     return <UsuarioForm existente={editando === 'nuevo' ? null : editando} onDone={() => setEditando(null)} />
@@ -575,20 +575,32 @@ function UsuarioForm({ existente, onDone }) {
   const [f, setF] = useState(existente ?? { email: '', nombre: '', rol: 'taller', activo: true })
   const [guardando, setGuardando] = useState(false)
 
+  // mientras compras/taller/viajes/diésel sigan en Firestore, firestore.rules necesita
+  // este mismo doc en usuarios/{email} -- se escribe en paralelo al de Supabase (fuente
+  // real de login) hasta que se migre el resto y se pueda borrar el puente.
+  const espejoFirestore = (email, datos) => setDoc(doc(db, 'usuarios', email), { email, ...datos }, { merge: true })
+
   const guardar = async () => {
     setGuardando(true)
     try {
       if (existente) {
-        await updateDoc(doc(db, 'usuarios', existente.id), { nombre: f.nombre, rol: f.rol, activo: f.activo })
+        const { error } = await supabase.from('perfiles')
+          .update({ nombre: f.nombre, rol: f.rol, activo: f.activo }).eq('id', existente.id)
+        if (error) throw error
+        await espejoFirestore(existente.email, { nombre: f.nombre, rol: f.rol, activo: f.activo })
       } else {
         const email = f.email.trim().toLowerCase()
         if (!email.includes('@')) { alert('Escribe un correo válido'); return }
-        if ((await getDoc(doc(db, 'usuarios', email))).exists()) { alert('Ya existe ese usuario'); return }
-        await setDoc(doc(db, 'usuarios', email), { email, nombre: f.nombre, rol: f.rol, activo: f.activo })
+        const { data, error } = await supabase.functions.invoke('crear-usuario', {
+          body: { email, nombre: f.nombre, rol: f.rol },
+        })
+        if (error) throw error
+        await espejoFirestore(email, { nombre: f.nombre, rol: f.rol, activo: true })
+        alert(`Usuario creado.\n\nEmail: ${data.email}\nContraseña temporal: ${data.password}\n\nCompártela ahora, no se vuelve a mostrar.`)
       }
       onDone()
     } catch (e) {
-      alert('Error al guardar: ' + e.message)
+      alert('Error al guardar: ' + (e.context ? await e.context.text?.().catch(() => e.message) : e.message))
     } finally {
       setGuardando(false)
     }
@@ -598,7 +610,7 @@ function UsuarioForm({ existente, onDone }) {
     <div>
       <h2>{existente ? existente.email : 'Agregar usuario'}</h2>
       {!existente && (
-        <label className="campo"><span>Correo (cuenta de Google)</span>
+        <label className="campo"><span>Correo</span>
           <input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="alguien@gmail.com" />
         </label>
       )}
@@ -608,15 +620,18 @@ function UsuarioForm({ existente, onDone }) {
       <label className="campo"><span>Rol</span>
         <select value={f.rol} onChange={(e) => setF({ ...f, rol: e.target.value })}>
           <option value="chofer">chofer</option>
+          <option value="dispatch">dispatch</option>
           <option value="taller">taller</option>
           <option value="compras">compras</option>
           <option value="admin">admin</option>
         </select>
       </label>
-      <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-        <input type="checkbox" style={{ width: 'auto' }} checked={f.activo} onChange={(e) => setF({ ...f, activo: e.target.checked })} />
-        <span style={{ margin: 0 }}>Activo (puede iniciar sesión)</span>
-      </label>
+      {existente && (
+        <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={f.activo} onChange={(e) => setF({ ...f, activo: e.target.checked })} />
+          <span style={{ margin: 0 }}>Activo (puede iniciar sesión)</span>
+        </label>
+      )}
       <div className="acciones">
         <button className="btn-primario" disabled={guardando} onClick={guardar}>
           {guardando ? 'Guardando…' : 'Guardar'}

@@ -43,19 +43,16 @@ function CargaDiesel({ usuario }) {
   const [viajesEnCurso, setViajesEnCurso] = useState([])
   const [viajeId, setViajeId] = useState('')
 
-  // viajes en proceso del chofer, para atribuir el diésel al movimiento activo
+  // viajes en proceso del chofer, para atribuir el diésel al movimiento activo -- RLS de
+  // Supabase ya limita "viajes" al chofer actual, no hace falta filtrar por email
   useEffect(() => {
     if (usuario.rol !== 'chofer') return
-    return onSnapshot(
-      query(collection(db, 'viajes'), where('operadorEmail', '==', usuario.email)),
-      (s) => {
-        const activos = s.docs.map((d) => ({ id: d.id, ...d.data() })).filter((v) => v.estatus === 'en_proceso')
-        setViajesEnCurso(activos)
-        setViajeId((prev) => (activos.some((v) => v.id === prev) ? prev : (activos[0]?.id ?? '')))
-      },
-      console.error,
-    )
-  }, [usuario.email, usuario.rol])
+    supabase.from('viajes').select('id, folio').eq('estatus', 'en_proceso').then(({ data, error }) => {
+      if (error) { console.error(error); return }
+      setViajesEnCurso(data)
+      setViajeId((prev) => (data.some((v) => v.id === prev) ? prev : (data[0]?.id ?? '')))
+    })
+  }, [usuario.rol])
 
   // el chofer ve sus propias cargas recientes; admin ve todas.
   // orden en cliente para no requerir índice compuesto (patrón de taller.jsx)
@@ -95,11 +92,11 @@ function CargaDiesel({ usuario }) {
       // liga al movimiento activo del viaje: el consumo se atribuye al chofer/camión del tramo
       let liga = { viajeId: null, viajeFolio: null, movimientoId: null }
       if (viajeId) {
-        const movs = await getDocs(query(collection(db, 'viajes', viajeId, 'movimientos'), where('activo', '==', true)))
+        const { data: movs } = await supabase.from('viaje_movimientos').select('id').eq('viaje_id', viajeId).eq('activo', true).limit(1)
         liga = {
           viajeId,
           viajeFolio: viajesEnCurso.find((v) => v.id === viajeId)?.folio ?? null,
-          movimientoId: movs.docs[0]?.id ?? null,
+          movimientoId: movs?.[0]?.id ?? null,
         }
       }
       // rendimiento = distancia recorrida desde la última carga / litros

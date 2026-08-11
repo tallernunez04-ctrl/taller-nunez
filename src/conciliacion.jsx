@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { collection, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore'
 import { db } from './firebase'
-import { aUSD, useTipoCambio, useUnidades } from './compras'
+import { supabase } from './lib/supabaseClient'
+import { aUSD, mapCompra, SELECT_COMPRA, useTabla, useTipoCambio, useUnidades } from './compras'
+import { mapViaje, SELECT_VIAJE, useViajes } from './viajes'
 import { dinero, r2, hoy } from './utils/format'
 
 /* Conciliación gerencial. Los KPIs del mes salen de /balances/{YYYY-MM}
@@ -79,18 +81,11 @@ export default function Conciliacion() {
 /* ---------- Flujo de caja proyectado (7 / 15 / 30 días) ---------- */
 
 function FlujoDeCaja() {
-  const [viajes, setViajes] = useState([])
-  const [compras, setCompras] = useState([])
-
   // cuentas por cobrar: viajes facturados sin pagar
-  useEffect(() => onSnapshot(collection(db, 'viajes'),
-    (s) => setViajes(
-      s.docs.map((d) => d.data())
-        .filter((v) => v.cobranza?.fechaFactura && !v.cobranza?.pagado),
-    ), console.error), [])
+  const todosViajes = useViajes() ?? []
+  const viajes = todosViajes.filter((v) => v.cobranza?.fechaFactura && !v.cobranza?.pagado)
   // cuentas por pagar: compras a crédito sin pagar
-  useEffect(() => onSnapshot(query(collection(db, 'compras'), where('pagado', '==', false)),
-    (s) => setCompras(s.docs.map((d) => d.data())), console.error), [])
+  const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('pagado', false)) ?? []
 
   const horizontes = [7, 15, 30].map((dias) => {
     const limite = sumaDias(dias)
@@ -156,12 +151,16 @@ function Rentabilidad({ mes }) {
   useEffect(() => {
     const desde = mes + '-01'
     const hasta = finDeMes(mes)
-    const rango = (col) => getDocs(query(collection(db, col),
-      where('fecha', '>=', desde), where('fecha', '<=', hasta)))
-    Promise.all([rango('viajes'), rango('compras'), rango('cargasDiesel')])
+    Promise.all([
+      supabase.from('viajes').select(SELECT_VIAJE).gte('fecha', desde).lte('fecha', hasta),
+      supabase.from('compras').select(SELECT_COMPRA).gte('fecha', desde).lte('fecha', hasta),
+      getDocs(query(collection(db, 'cargasDiesel'), where('fecha', '>=', desde), where('fecha', '<=', hasta))),
+    ])
       .then(([v, c, d]) => {
-        setViajes(v.docs.map((x) => x.data()))
-        setCompras(c.docs.map((x) => x.data()))
+        if (v.error) throw v.error
+        setViajes(v.data.map((x) => mapViaje(x)))
+        if (c.error) throw c.error
+        setCompras(c.data.map(mapCompra))
         setCargas(d.docs.map((x) => x.data()))
       })
       .catch(console.error)

@@ -1,12 +1,10 @@
 import { useEffect, useState } from 'react'
-import {
-  addDoc, collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, updateDoc,
-} from 'firebase/firestore'
-import { db } from './firebase'
-import { useColeccion, useUnidades } from './compras'
+import { supabase } from './lib/supabaseClient'
+import { useTabla, useUnidades } from './compras'
 
 /* Catálogos del ERP: Operadores, Clientes (+direcciones), Proveedores y Tabulador.
-   Todos siguen el patrón lista-tarjetas + formulario de Unidades (compras.jsx). */
+   Todos siguen el patrón lista-tarjetas + formulario de Unidades (compras.jsx).
+   Migrado a Supabase -- ver mapXxx() para el snake_case -> camelCase de cada tabla. */
 
 // días que faltan para una fecha YYYY-MM-DD (negativo = ya venció)
 export const diasPara = (fecha) => {
@@ -37,10 +35,62 @@ export default function Catalogos({ vista }) {
   return <Operadores />
 }
 
+const mapOperador = (o) => ({
+  id: o.id,
+  perfilId: o.perfil_id ?? '',
+  nombre: o.nombre,
+  telefono: o.telefono ?? '',
+  direccion: o.direccion ?? '',
+  rfc: o.rfc ?? '',
+  curp: o.curp ?? '',
+  email: o.email ?? '',
+  licencia: { numero: o.licencia_numero ?? '', vence: o.licencia_vence ?? '' },
+  visa: { numero: o.visa_numero ?? '', vence: o.visa_vence ?? '' },
+  aptoMedicoFecha: o.apto_medico_fecha ?? '',
+  unidadBaseId: o.unidad_base_id ?? '',
+  activo: o.activo,
+})
+const mapCliente = (c) => ({
+  id: c.id,
+  razonSocial: c.razon_social,
+  contacto: c.contacto ?? '',
+  rfc: c.rfc ?? '',
+  telefono: c.telefono ?? '',
+  correo: c.correo ?? '',
+  diasCredito: c.dias_credito ?? 0,
+  activo: c.activo,
+})
+const mapDireccion = (d) => ({
+  id: d.id, calle: d.calle ?? '', ciudad: d.ciudad ?? '', estado: d.estado ?? '', pais: d.pais ?? '', cp: d.cp ?? '',
+})
+const mapProveedor = (p) => ({
+  id: p.id,
+  razonSocial: p.razon_social,
+  rfc: p.rfc ?? '',
+  diasCredito: p.dias_credito ?? 0,
+  banco: { nombre: p.banco_nombre ?? '', clabe: p.banco_clabe ?? '', cuenta: p.banco_cuenta ?? '' },
+  activo: p.activo,
+})
+const mapTramo = (t) => ({ id: t.id, origen: t.origen, destino: t.destino, pagoChofer: t.pago_chofer, km: t.km ?? 0 })
+const mapContacto = (c) => ({ id: c.id, nombre: c.nombre, relacion: c.relacion ?? '', telefono: c.telefono ?? '' })
+
+export const useOperadores = () => useTabla('operadores', mapOperador)
+export const useClientes = () => useTabla('clientes', mapCliente)
+export const useProveedores = () => useTabla('proveedores', mapProveedor)
+export const useTabuladores = () => useTabla('tabuladores', mapTramo, (q) => q.select('*').eq('vigente', true))
+
+// direcciones y contactos se cargan bajo demanda (solo al editar un cliente/operador puntual),
+// no con canal realtime -- es un formulario que un solo admin edita a la vez.
+export const cargarDirecciones = (clienteId) => supabase.from('cliente_direcciones').select('*').eq('cliente_id', clienteId)
+  .then(({ data, error }) => { if (error) throw error; return data.map(mapDireccion) })
+const cargarContactos = (operadorId) => supabase.from('operador_contactos_emergencia').select('*').eq('operador_id', operadorId)
+  .then(({ data, error }) => { if (error) throw error; return data.map(mapContacto) })
+
 /* ---------- Operadores (choferes) ---------- */
 
 const contactoVacio = () => ({ nombre: '', relacion: '', telefono: '' })
 const operadorVacio = () => ({
+  perfilId: '',
   nombre: '', telefono: '', direccion: '', rfc: '', curp: '', email: '',
   licencia: { numero: '', vence: '' },
   visa: { numero: '', vence: '' },
@@ -51,7 +101,7 @@ const operadorVacio = () => ({
 })
 
 function Operadores() {
-  const operadores = useColeccion('operadores')
+  const operadores = useOperadores()
   const unidades = useUnidades()
   const [editando, setEditando] = useState(null) // objeto | 'nuevo' | null
   const numeroDe = Object.fromEntries(unidades.map((u) => [u.id, u.numero]))
@@ -92,9 +142,11 @@ function Operadores() {
 
 function OperadorForm({ operador, unidades, onDone }) {
   const [f, setF] = useState(() => operador
-    ? { ...operadorVacio(), ...operador, contactosEmergencia: operador.contactosEmergencia?.length ? operador.contactosEmergencia : [contactoVacio()] }
+    ? { ...operadorVacio(), ...operador, contactosEmergencia: [contactoVacio()] }
     : operadorVacio())
   const [guardando, setGuardando] = useState(false)
+  const [cargandoContactos, setCargandoContactos] = useState(Boolean(operador))
+  const [perfiles, setPerfiles] = useState([])
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
   const setAnidado = (campo, sub) => (e) => setF({ ...f, [campo]: { ...f[campo], [sub]: e.target.value } })
   const setContacto = (i, campo) => (e) => setF({
@@ -102,23 +154,52 @@ function OperadorForm({ operador, unidades, onDone }) {
     contactosEmergencia: f.contactosEmergencia.map((c, j) => (j === i ? { ...c, [campo]: e.target.value } : c)),
   })
 
+  useEffect(() => {
+    if (!operador) return
+    cargarContactos(operador.id).then((contactos) => {
+      setF((prev) => ({ ...prev, contactosEmergencia: contactos.length ? contactos : [contactoVacio()] }))
+      setCargandoContactos(false)
+    }).catch(console.error)
+  }, [operador?.id])
+
+  // cuentas de login disponibles para vincular -- sin esto, auth_operador_id() (RLS de
+  // viajes/diésel/reportes de falla) nunca resuelve y el chofer no ve nada de lo suyo.
+  useEffect(() => {
+    supabase.from('perfiles').select('id, email, nombre, rol').eq('activo', true).order('email')
+      .then(({ data, error }) => { if (!error) setPerfiles(data) })
+  }, [])
+
   const guardar = async () => {
     if (!f.nombre.trim()) { alert('Escribe el nombre del operador'); return }
     setGuardando(true)
     try {
       const datos = {
+        perfil_id: f.perfilId || null,
         nombre: f.nombre.trim(),
-        telefono: f.telefono, direccion: f.direccion, rfc: f.rfc, curp: f.curp,
-        email: f.email.trim().toLowerCase(),
-        licencia: f.licencia, visa: f.visa, aptoMedicoFecha: f.aptoMedicoFecha,
-        contactosEmergencia: f.contactosEmergencia.filter((c) => c.nombre.trim()),
-        unidadBaseId: f.unidadBaseId,
+        telefono: f.telefono || null, direccion: f.direccion || null, rfc: f.rfc || null, curp: f.curp || null,
+        email: f.email.trim().toLowerCase() || null,
+        licencia_numero: f.licencia.numero || null, licencia_vence: f.licencia.vence || null,
+        visa_numero: f.visa.numero || null, visa_vence: f.visa.vence || null,
+        apto_medico_fecha: f.aptoMedicoFecha || null,
+        unidad_base_id: f.unidadBaseId || null,
         activo: f.activo,
       }
+      const contactos = f.contactosEmergencia.filter((c) => c.nombre.trim())
+      let operadorId = operador?.id
       if (operador) {
-        await updateDoc(doc(db, 'operadores', operador.id), datos)
+        const { error } = await supabase.from('operadores').update(datos).eq('id', operador.id)
+        if (error) throw error
+        await supabase.from('operador_contactos_emergencia').delete().eq('operador_id', operador.id)
       } else {
-        await addDoc(collection(db, 'operadores'), { ...datos, createdAt: serverTimestamp() })
+        const { data, error } = await supabase.from('operadores').insert(datos).select('id').single()
+        if (error) throw error
+        operadorId = data.id
+      }
+      if (contactos.length) {
+        const { error } = await supabase.from('operador_contactos_emergencia').insert(
+          contactos.map((c) => ({ operador_id: operadorId, nombre: c.nombre.trim(), relacion: c.relacion || null, telefono: c.telefono || null })),
+        )
+        if (error) throw error
       }
       onDone()
     } catch (e) {
@@ -134,6 +215,12 @@ function OperadorForm({ operador, unidades, onDone }) {
       <h2>{operador ? operador.nombre : 'Nuevo operador'}</h2>
       <label className="campo"><span>Nombre completo</span>
         <input value={f.nombre} onChange={set('nombre')} />
+      </label>
+      <label className="campo"><span>Cuenta de login (para ver sus viajes/diésel)</span>
+        <select value={f.perfilId} onChange={set('perfilId')}>
+          <option value="">Sin vincular</option>
+          {perfiles.map((p) => <option key={p.id} value={p.id}>{p.email} ({p.rol})</option>)}
+        </select>
       </label>
       <div className="fila-2">
         <label className="campo"><span>Teléfono</span>
@@ -180,6 +267,7 @@ function OperadorForm({ operador, unidades, onDone }) {
       )}
 
       <h3>Contactos de emergencia</h3>
+      {cargandoContactos && <p className="muted">Cargando…</p>}
       {f.contactosEmergencia.map((c, i) => (
         <div key={i} className="linea">
           <label className="campo"><span>Nombre</span>
@@ -227,12 +315,12 @@ function OperadorForm({ operador, unidades, onDone }) {
   )
 }
 
-/* ---------- Clientes (+ subcolección direcciones) ---------- */
+/* ---------- Clientes (+ direcciones) ---------- */
 
 const clienteVacio = () => ({ razonSocial: '', contacto: '', rfc: '', telefono: '', correo: '', diasCredito: 0 })
 
 function Clientes() {
-  const clientes = useColeccion('clientes')
+  const clientes = useClientes()
   const [editando, setEditando] = useState(null)
 
   if (editando) {
@@ -272,9 +360,8 @@ function ClienteForm({ cliente, onDone }) {
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
   useEffect(() => {
-    if (!cliente) return undefined
-    return onSnapshot(collection(db, 'clientes', cliente.id, 'direcciones'),
-      (s) => setDirecciones(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error)
+    if (!cliente) return
+    cargarDirecciones(cliente.id).then(setDirecciones).catch(console.error)
   }, [cliente])
 
   const guardar = async () => {
@@ -282,14 +369,13 @@ function ClienteForm({ cliente, onDone }) {
     setGuardando(true)
     try {
       const datos = {
-        razonSocial: f.razonSocial.trim(), contacto: f.contacto, rfc: f.rfc,
-        telefono: f.telefono, correo: f.correo, diasCredito: Number(f.diasCredito) || 0,
+        razon_social: f.razonSocial.trim(), contacto: f.contacto || null, rfc: f.rfc || null,
+        telefono: f.telefono || null, correo: f.correo || null, dias_credito: Number(f.diasCredito) || 0,
       }
-      if (cliente) {
-        await updateDoc(doc(db, 'clientes', cliente.id), datos)
-      } else {
-        await addDoc(collection(db, 'clientes'), { ...datos, createdAt: serverTimestamp() })
-      }
+      const { error } = cliente
+        ? await supabase.from('clientes').update(datos).eq('id', cliente.id)
+        : await supabase.from('clientes').insert(datos)
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)
@@ -302,19 +388,24 @@ function ClienteForm({ cliente, onDone }) {
   const guardarDireccion = async () => {
     if (!dirForm.calle.trim() || !dirForm.ciudad.trim()) { alert('Calle y ciudad son obligatorias'); return }
     try {
-      const { id, ...datos } = dirForm
-      if (id) {
-        await updateDoc(doc(db, 'clientes', cliente.id, 'direcciones', id), datos)
-      } else {
-        await addDoc(collection(db, 'clientes', cliente.id, 'direcciones'), datos)
-      }
+      const { id, ...d } = dirForm
+      const fila = { cliente_id: cliente.id, calle: d.calle, ciudad: d.ciudad, estado: d.estado || null, pais: d.pais || null, cp: d.cp || null }
+      const { error } = id
+        ? await supabase.from('cliente_direcciones').update(fila).eq('id', id)
+        : await supabase.from('cliente_direcciones').insert(fila)
+      if (error) throw error
       setDirForm(null)
+      setDirecciones(await cargarDirecciones(cliente.id))
     } catch (e) { alert('Error: ' + e.message) }
   }
 
   const borrarDireccion = async (id) => {
     if (!confirm('¿Eliminar esta dirección?')) return
-    try { await deleteDoc(doc(db, 'clientes', cliente.id, 'direcciones', id)) } catch (e) { alert('Error: ' + e.message) }
+    try {
+      const { error } = await supabase.from('cliente_direcciones').delete().eq('id', id)
+      if (error) throw error
+      setDirecciones((prev) => prev.filter((d) => d.id !== id))
+    } catch (e) { alert('Error: ' + e.message) }
   }
 
   return (
@@ -410,7 +501,7 @@ const proveedorVacio = () => ({
 })
 
 function Proveedores() {
-  const proveedores = useColeccion('proveedores')
+  const proveedores = useProveedores()
   const [editando, setEditando] = useState(null)
 
   if (editando) {
@@ -450,14 +541,14 @@ function ProveedorForm({ proveedor, onDone }) {
     setGuardando(true)
     try {
       const datos = {
-        razonSocial: f.razonSocial.trim(), rfc: f.rfc,
-        diasCredito: Number(f.diasCredito) || 0, banco: f.banco,
+        razon_social: f.razonSocial.trim(), rfc: f.rfc || null,
+        dias_credito: Number(f.diasCredito) || 0,
+        banco_nombre: f.banco.nombre || null, banco_clabe: f.banco.clabe || null, banco_cuenta: f.banco.cuenta || null,
       }
-      if (proveedor) {
-        await updateDoc(doc(db, 'proveedores', proveedor.id), datos)
-      } else {
-        await addDoc(collection(db, 'proveedores'), { ...datos, createdAt: serverTimestamp() })
-      }
+      const { error } = proveedor
+        ? await supabase.from('proveedores').update(datos).eq('id', proveedor.id)
+        : await supabase.from('proveedores').insert(datos)
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)
@@ -506,7 +597,7 @@ function ProveedorForm({ proveedor, onDone }) {
 /* ---------- Tabulador (pago a chofer por tramo origen-destino) ---------- */
 
 function Tabulador() {
-  const tramos = useColeccion('tabuladores')
+  const tramos = useTabuladores()
   const [f, setF] = useState(null) // {id?} en edición | null
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
@@ -514,23 +605,22 @@ function Tabulador() {
     if (!f.origen.trim() || !f.destino.trim()) { alert('Origen y destino son obligatorios'); return }
     if (!(Number(f.pagoChofer) > 0)) { alert('Escribe el pago al chofer'); return }
     try {
-      const { id, ...datos } = f
-      const limpio = {
-        origen: datos.origen.trim(), destino: datos.destino.trim(),
-        pagoChofer: Number(datos.pagoChofer), km: Number(datos.km) || 0,
-      }
-      if (id) {
-        await updateDoc(doc(db, 'tabuladores', id), limpio)
-      } else {
-        await addDoc(collection(db, 'tabuladores'), { ...limpio, createdAt: serverTimestamp() })
-      }
+      const limpio = { origen: f.origen.trim(), destino: f.destino.trim(), pago_chofer: Number(f.pagoChofer), km: Number(f.km) || null }
+      // no se edita en sitio: un viaje ya conciliado con este tramo no debe ver cambiar su
+      // costeo histórico -- se retira la tarifa vieja (vigente=false) y se inserta la nueva.
+      if (f.id) await supabase.from('tabuladores').update({ vigente: false }).eq('id', f.id)
+      const { error } = await supabase.from('tabuladores').insert(limpio)
+      if (error) throw error
       setF(null)
     } catch (e) { alert('Error: ' + e.message) }
   }
 
   const borrar = async (id) => {
-    if (!confirm('¿Eliminar este tramo del tabulador?')) return
-    try { await deleteDoc(doc(db, 'tabuladores', id)) } catch (e) { alert('Error: ' + e.message) }
+    if (!confirm('¿Retirar este tramo del tabulador? Los viajes que ya lo usaron conservan su costeo.')) return
+    try {
+      const { error } = await supabase.from('tabuladores').update({ vigente: false }).eq('id', id)
+      if (error) throw error
+    } catch (e) { alert('Error: ' + e.message) }
   }
 
   const lista = (tramos ?? []).slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino))

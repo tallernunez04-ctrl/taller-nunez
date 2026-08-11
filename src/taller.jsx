@@ -1,10 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  collection, doc, onSnapshot, query, runTransaction,
-  serverTimestamp, updateDoc, where,
-} from 'firebase/firestore'
-import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
+import { mapWO, SELECT_WO, useTabla } from './compras'
 import { hoy } from './utils/format'
 
 export const FALLAS = [
@@ -23,19 +19,11 @@ export const LECTURA_LABEL = { mi: 'Millaje (mi)', km: 'Kilometraje (km)', hrs: 
 export const piezasLista = (p) => (Array.isArray(p) ? p : p ? [p] : [])
 
 export default function Taller({ usuario, vista, setVista }) {
-  const [wos, setWos] = useState(null)
   const [editando, setEditando] = useState(null)
 
-  // admin ve todas las WO en proceso; taller solo las propias
-  useEffect(() => onSnapshot(
-    query(
-      collection(db, 'workOrders'),
-      ...(usuario.rol === 'admin' ? [] : [where('creadoPor', '==', usuario.email)]),
-      where('estatus', '==', 'en_proceso'),
-    ),
-    (snap) => setWos(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [usuario.email, usuario.rol])
+  // RLS de work_orders ya deja a taller ver/editar cualquier WO (taller de varios mecánicos
+  // compartiendo trabajo), no solo las propias -- admin ve lo mismo.
+  const wos = useTabla('work_orders', mapWO, (q) => q.select(SELECT_WO).eq('estatus', 'en_proceso'))
 
   useEffect(() => { setEditando(null) }, [vista])
 
@@ -123,36 +111,23 @@ function WOForm({ usuario, wo, onDone }) {
     try {
       const datos = {
         fecha: f.fecha,
-        unidadId: f.unidadId,
-        unidadNumero: f.unidadNumero,
-        lectura: { valor: Number(f.lectura.valor) || 0, unidad: f.lectura.unidad },
-        chofer: f.chofer,
-        mecanico: f.mecanico,
-        tipoFalla: f.tipoFalla,
-        diagnostico: f.diagnostico,
-        piezasRequeridas: f.piezasRequeridas.map((p) => p.trim()).filter(Boolean),
-        notasMecanico: f.notasMecanico,
+        unidad_id: f.unidadId,
+        lectura_valor: Number(f.lectura.valor) || null,
+        lectura_unidad: f.lectura.unidad || null,
+        chofer_texto: f.chofer || null,
+        mecanico_texto: f.mecanico || null,
+        tipo_falla: f.tipoFalla,
+        diagnostico: f.diagnostico || null,
+        piezas_requeridas: f.piezasRequeridas.map((p) => p.trim()).filter(Boolean),
+        notas_mecanico: f.notasMecanico || null,
         estatus: completar ? 'completado' : 'en_proceso',
-        ...(completar ? { completadoAt: serverTimestamp() } : {}),
+        ...(completar ? { completado_at: new Date().toISOString() } : {}),
       }
-      if (wo) {
-        await updateDoc(doc(db, 'workOrders', wo.id), datos)
-      } else {
-        // el número se genera aquí, al guardar — nunca al abrir el formulario
-        await runTransaction(db, async (tx) => {
-          const cfgRef = doc(db, 'config', 'general')
-          const cfg = await tx.get(cfgRef)
-          const n = (cfg.data()?.ultimoWO ?? 0) + 1
-          tx.update(cfgRef, { ultimoWO: n })
-          tx.set(doc(collection(db, 'workOrders')), {
-            ...datos,
-            wo: 'WO-' + String(n).padStart(4, '0'),
-            creadoPor: usuario.email,
-            createdAt: serverTimestamp(),
-            completadoAt: completar ? serverTimestamp() : null,
-          })
-        })
-      }
+      // el folio WO-XXXX lo asigna la secuencia de Postgres al insertar, no hace falta contador propio
+      const { error } = wo
+        ? await supabase.from('work_orders').update(datos).eq('id', wo.id)
+        : await supabase.from('work_orders').insert({ ...datos, creado_por: usuario.id })
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)

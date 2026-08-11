@@ -1,10 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  collection, doc, increment, onSnapshot, orderBy, query, runTransaction,
-  serverTimestamp, setDoc, updateDoc, where,
-} from 'firebase/firestore'
+import { collection, doc, increment, onSnapshot, setDoc } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
 import { supabase } from './lib/supabaseClient'
+import { useProveedores } from './catalogos'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
 import { r2, dinero, hoy } from './utils/format'
 
@@ -92,6 +90,92 @@ export function useColeccion(nombre) {
   return docs
 }
 
+// hook genérico realtime para Supabase: select inicial (con embeds/filtros vía `construir`,
+// que recibe el query builder ya apuntando a la tabla) + canal con nombre único por instancia
+// montada -- mismo motivo que useUnidades: dos formularios abiertos a la vez no pueden
+// compartir un canal ya suscrito.
+export function useTabla(tabla, mapear, construir) {
+  const [datos, setDatos] = useState(null)
+  useEffect(() => {
+    const cargar = () => {
+      const q = construir ? construir(supabase.from(tabla)) : supabase.from(tabla).select('*')
+      q.then(({ data, error }) => {
+        if (error) { console.error(error); return }
+        setDatos(data.map(mapear))
+      })
+    }
+    cargar()
+    const canal = supabase
+      .channel(`${tabla}-cambios-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: tabla }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [tabla])
+  return datos
+}
+
+// selects con los embeds de FK que necesita la UI (evita denormalizar unidadNumero/proveedor/etc.)
+export const SELECT_WO = '*, unidades(numero), perfiles(email)'
+export const SELECT_COMPRA = '*, compra_conceptos(*), unidades(numero), proveedores(razon_social), work_orders(folio), perfiles(email)'
+
+export const mapWO = (w) => ({
+  id: w.id,
+  wo: w.folio,
+  fecha: w.fecha,
+  unidadId: w.unidad_id,
+  unidadNumero: w.unidades?.numero ?? '',
+  lectura: { valor: w.lectura_valor ?? 0, unidad: w.lectura_unidad ?? '' },
+  chofer: w.chofer_texto ?? '',
+  mecanico: w.mecanico_texto ?? '',
+  tipoFalla: w.tipo_falla ?? [],
+  diagnostico: w.diagnostico ?? '',
+  piezasRequeridas: w.piezas_requeridas ?? [],
+  notasMecanico: w.notas_mecanico ?? '',
+  estatus: w.estatus,
+  creadoPor: w.perfiles?.email ?? '',
+  createdAt: w.created_at,
+  completadoAt: w.completado_at,
+})
+
+export const mapCompra = (c) => ({
+  id: c.id,
+  poFolio: c.folio,
+  fecha: c.fecha,
+  woId: c.wo_id,
+  woNumero: c.work_orders?.folio ?? null,
+  unidadId: c.unidad_id,
+  unidadNumero: c.es_general ? 'General' : (c.unidades?.numero ?? ''),
+  esGeneral: c.es_general,
+  metodoPago: c.metodo_pago,
+  tipoPago: c.tipo_pago,
+  fechaVence: c.fecha_vence,
+  pagado: c.pagado,
+  pagadoAt: c.pagado_at,
+  comprobantePagoURL: c.comprobante_pago_path ?? '',
+  facturaURL: c.factura_path ?? '',
+  xmlURL: c.xml_path ?? '',
+  esDiesel: c.es_diesel,
+  litrosFacturados: c.litros_facturados ?? 0,
+  notas: c.notas ?? '',
+  creadoPor: c.perfiles?.email ?? '',
+  tipoCambioUsado: Number(c.tipo_cambio_usado),
+  subtotalGeneralUSD: aUSD(Number(c.subtotal), c.moneda, Number(c.tipo_cambio_usado)),
+  ivaGeneralUSD: aUSD(Number(c.iva), c.moneda, Number(c.tipo_cambio_usado)),
+  totalGeneralUSD: Number(c.total_usd),
+  createdAt: c.created_at,
+  grupos: [{
+    proveedorId: c.proveedor_id,
+    proveedor: c.proveedores?.razon_social ?? '',
+    moneda: c.moneda,
+    folioFactura: c.folio_factura ?? '',
+    conceptos: (c.compra_conceptos ?? []).map((x) => ({
+      concepto: x.concepto, cantidad: Number(x.cantidad), costoUnitario: Number(x.costo_unitario),
+      tasaIVA: Number(x.tasa_iva) * 100, subtotal: Number(x.subtotal), iva: Number(x.iva), total: Number(x.total),
+    })),
+    subtotal: Number(c.subtotal), iva: Number(c.iva), total: Number(c.total), totalUSD: Number(c.total_usd),
+  }],
+})
+
 export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
   const [busqueda, setBusqueda] = useState('')
   const filtradas = busqueda
@@ -131,18 +215,13 @@ export default function Compras({ usuario, vista }) {
 /* ---------- Sección 1: Work Orders ---------- */
 
 function WorkOrders({ usuario }) {
-  const [wos, setWos] = useState(null)
   const [detalle, setDetalle] = useState(null)
   const [fEstatus, setFEstatus] = useState('')
   const [fTipo, setFTipo] = useState('')
   const unidades = useUnidades()
   const tipoDe = useMemo(() => Object.fromEntries(unidades.map((u) => [u.id, u.tipo])), [unidades])
 
-  useEffect(() => onSnapshot(
-    query(collection(db, 'workOrders'), orderBy('createdAt', 'desc')),
-    (s) => setWos(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [])
+  const wos = useTabla('work_orders', mapWO, (q) => q.select(SELECT_WO).order('created_at', { ascending: false }))
 
   if (detalle) return <WODetalle usuario={usuario} wo={detalle} onVolver={() => setDetalle(null)} />
 
@@ -194,14 +273,8 @@ function WorkOrders({ usuario }) {
 }
 
 function WODetalle({ usuario, wo, onVolver }) {
-  const [compras, setCompras] = useState([])
   const [comprando, setComprando] = useState(false)
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'compras'), where('woId', '==', wo.id)),
-    (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [wo.id])
+  const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('wo_id', wo.id)) ?? []
 
   if (comprando) return <CompraForm usuario={usuario} wo={wo} onDone={() => setComprando(false)} />
 
@@ -316,7 +389,7 @@ const sumaDias = (fecha, dias) => {
 function CompraForm({ usuario, wo, onDone }) {
   const unidades = useUnidades()
   const tc = useTipoCambio()
-  const proveedores = useColeccion('proveedores') ?? []
+  const proveedores = useProveedores() ?? []
   const [f, setF] = useState(() => compraVacia(wo))
   const [guardando, setGuardando] = useState(false)
 
@@ -364,58 +437,53 @@ function CompraForm({ usuario, wo, onDone }) {
     }
     setGuardando(true)
     try {
-      // cada proveedor genera su propio documento PO — refs pre-generadas para
-      // subir adjuntos antes de la transacción y guardar folios consecutivos dentro de ella
-      const docs = await Promise.all(grupos.map(async (g) => {
-        const ref = doc(collection(db, 'compras'))
+      // un renglón de `compras` por proveedor (mismo criterio que ya usaba Firestore: un PO
+      // por proveedor); el id se genera en el cliente para nombrar los archivos antes del insert.
+      // el folio PO-XXXX lo asigna la secuencia de Postgres (nextval), no hace falta contador propio.
+      const filas = await Promise.all(grupos.map(async (g) => {
+        const id = crypto.randomUUID()
         const orig = f.grupos[g.gi]
-        const facturaURL = orig.pdf ? await subirArchivo(`compras/${ref.id}/factura_${orig.pdf.name}`, orig.pdf) : ''
-        const xmlURL = orig.xml ? await subirArchivo(`compras/${ref.id}/xml_${orig.xml.name}`, orig.xml) : ''
-        return { ref, g, orig, facturaURL, xmlURL }
+        const prov = proveedores.find((p) => p.id === g.proveedorId)
+        const facturaURL = orig.pdf ? await subirArchivo(`compras/${id}/factura_${orig.pdf.name}`, orig.pdf) : ''
+        const xmlURL = orig.xml ? await subirArchivo(`compras/${id}/xml_${orig.xml.name}`, orig.xml) : ''
+        return { id, g, orig, prov, facturaURL, xmlURL }
       }))
-      await runTransaction(db, async (tx) => {
-        const cfgRef = doc(db, 'config', 'general')
-        const cfg = await tx.get(cfgRef)
-        let n = cfg.data()?.ultimoPO ?? 0
-        for (const { ref, g, orig, facturaURL, xmlURL } of docs) {
-          n += 1
-          const prov = proveedores.find((p) => p.id === g.proveedorId)
-          const { gi: _gi, ...grupo } = g
-          tx.set(ref, {
-            poFolio: 'PO-' + String(n).padStart(4, '0'),
-            woId: wo?.id ?? null,
-            woNumero: wo?.wo ?? null,
-            unidadId: f.esGeneral ? null : f.unidadId,
-            unidadNumero: f.esGeneral ? 'General' : f.unidadNumero,
-            esGeneral: f.esGeneral,
-            fecha: f.fecha,
-            grupos: [grupo], // un grupo por doc; los docs viejos con varios grupos se siguen leyendo igual
-            subtotalGeneralUSD: aUSD(g.subtotal, g.moneda, tc),
-            ivaGeneralUSD: aUSD(g.iva, g.moneda, tc),
-            totalGeneralUSD: g.totalUSD,
-            tipoCambioUsado: tc,
-            metodoPago: f.metodoPago,
-            tipoPago: esCredito ? 'credito' : 'contado',
-            proveedorId: g.proveedorId,
-            fechaVence: esCredito ? sumaDias(f.fecha, prov?.diasCredito ?? 0) : null,
-            pagado: !esCredito, // contado queda pagado al momento
-            comprobantePagoURL: '',
-            facturaURL, xmlURL,
-            esDiesel: Boolean(orig.esDiesel),
-            litrosFacturados: orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0,
-            notas: f.notas,
-            creadoPor: usuario.email,
-            createdAt: serverTimestamp(),
-          })
-        }
-        tx.update(cfgRef, { ultimoPO: n })
-      })
-      // agregación mensual para conciliación (fuera de la transacción: increment idempotente por guardado)
+      for (const { id, g, orig, prov, facturaURL, xmlURL } of filas) {
+        const { error: errCompra } = await supabase.from('compras').insert({
+          id,
+          wo_id: wo?.id ?? null,
+          unidad_id: f.esGeneral ? null : f.unidadId,
+          es_general: f.esGeneral,
+          fecha: f.fecha,
+          proveedor_id: g.proveedorId,
+          moneda: g.moneda,
+          folio_factura: g.folioFactura || null,
+          subtotal: g.subtotal, iva: g.iva, total: g.total, total_usd: g.totalUSD,
+          tipo_cambio_usado: tc,
+          metodo_pago: f.metodoPago,
+          fecha_vence: esCredito ? sumaDias(f.fecha, prov?.diasCredito ?? 0) : null,
+          pagado: !esCredito, // contado queda pagado al momento
+          factura_path: facturaURL || null, xml_path: xmlURL || null,
+          es_diesel: Boolean(orig.esDiesel),
+          litros_facturados: orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0,
+          notas: f.notas || null,
+          creado_por: usuario.id,
+        })
+        if (errCompra) throw errCompra
+        const { error: errConceptos } = await supabase.from('compra_conceptos').insert(
+          g.conceptos.map((c) => ({
+            compra_id: id, concepto: c.concepto, cantidad: c.cantidad,
+            costo_unitario: c.costoUnitario, tasa_iva: c.tasaIVA / 100,
+          })),
+        )
+        if (errConceptos) throw errConceptos
+      }
+      // agregación mensual para conciliación -- sigue en Firestore, ese módulo no ha migrado
       const mes = f.fecha.slice(0, 7)
-      const totalDiesel = r2(docs.reduce((s, { g, orig }) => s + (orig.esDiesel ? g.totalUSD : 0), 0))
-      const litros = docs.reduce((s, { orig }) => s + (orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0), 0)
+      const totalDiesel = r2(filas.reduce((s, { g, orig }) => s + (orig.esDiesel ? g.totalUSD : 0), 0))
+      const litros = filas.reduce((s, { orig }) => s + (orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0), 0)
       await incBalance(mes, {
-        costoCompras: r2(docs.reduce((s, { g }) => s + g.totalUSD, 0)),
+        costoCompras: r2(filas.reduce((s, { g }) => s + g.totalUSD, 0)),
         ...(totalDiesel > 0 ? { costoDieselFacturado: totalDiesel, litrosFacturados: litros } : {}),
       })
       if (onDone) {
@@ -793,16 +861,10 @@ const lunesDe = (fecha) => {
 }
 
 function CuentasPorPagar() {
-  const [compras, setCompras] = useState(null)
   const [pagando, setPagando] = useState(null) // compra en proceso de pago
   const [comprobante, setComprobante] = useState(null)
   const [guardando, setGuardando] = useState(false)
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'compras'), where('tipoPago', '==', 'credito')),
-    (s) => setCompras(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [])
+  const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('tipo_pago', 'credito'))
 
   const pendientes = (compras ?? []).filter((c) => !c.pagado)
     .sort((a, b) => (a.fechaVence || '').localeCompare(b.fechaVence || ''))
@@ -821,11 +883,12 @@ function CuentasPorPagar() {
       const url = comprobante
         ? await subirArchivo(`compras/${pagando.id}/pago_${comprobante.name}`, comprobante)
         : ''
-      await updateDoc(doc(db, 'compras', pagando.id), {
+      const { error } = await supabase.from('compras').update({
         pagado: true,
-        pagadoAt: hoy(),
-        comprobantePagoURL: url,
-      })
+        pagado_at: hoy(),
+        comprobante_pago_path: url || null,
+      }).eq('id', pagando.id)
+      if (error) throw error
       setPagando(null)
       setComprobante(null)
     } catch (e) {

@@ -1,21 +1,20 @@
 import { useEffect, useState } from 'react'
-import {
-  collection, doc, getDocs, increment, onSnapshot, query, runTransaction,
-  serverTimestamp, updateDoc, where, writeBatch,
-} from 'firebase/firestore'
+import { doc, onSnapshot } from 'firebase/firestore'
 import { db, subirArchivo } from './firebase'
+import { supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { incBalance, useColeccion, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
+import { incBalance, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
 import { dinero, r2, hoy } from './utils/format'
-import { direccionTexto } from './catalogos'
+import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 
-/* Módulo Viajes: operación + costeo + viáticos + cuentas por cobrar.
-   Rediseño con dos ejes independientes:
-   - /viajes/{id}/entregas: consolidación (varios clientes/destinos por viaje)
-   - /viajes/{id}/movimientos: cadena de custodia (chofer/camión pueden cambiar a medio viaje)
-   El doc padre denormaliza choferActual- y camionActual- (y los campos legacy operador- y unidad-
-   que nómina, rules y la PWA del chofer siguen leyendo) — solo se escriben en transacción.
-   El costeo se calcula UNA vez al guardar, con la MEDIANA de las últimas 5 cargas. */
+/* Módulo Viajes: operación + costeo + viáticos + cuentas por cobrar. Migrado a Supabase.
+   - viaje_entregas: consolidación (varios clientes/destinos por viaje)
+   - viaje_movimientos: cadena de custodia (chofer/camión pueden cambiar a medio viaje)
+   entregasPendientes/kmTotales/clienteNombre ya no son contadores denormalizados: se derivan
+   de las vistas v_viaje_entregas_resumen / v_viaje_kilometraje / v_viaje_clientes. La atomicidad
+   que daba runTransaction() en Firestore (nunca existe un viaje sin movimiento, cerrar+abrir
+   movimiento es todo o nada) vive ahora en 3 funciones de Postgres: crear_viaje,
+   registrar_cambio_custodia, terminar_viaje (ver migración rpc_viajes_transacciones). */
 
 export const ESTATUS_VIAJE = { en_proceso: 'En proceso', terminado: 'Terminado', conciliado: 'Conciliado' }
 
@@ -25,100 +24,162 @@ const sumaDias = (fecha, dias) => {
   return d.toLocaleDateString('sv')
 }
 
-const fmtTs = (t) => t?.toDate?.().toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) ?? '—'
+const fmtTs = (t) => (t ? new Date(t).toLocaleString('es-MX', { dateStyle: 'short', timeStyle: 'short' }) : '—')
 
-// rendimiento para costeo: mediana (resistente a atípicos); cae a promedio en docs viejos
-const rendimientoCosteo = (u) =>
-  u?.rendimientoMediana ?? mediana(u?.ultimosRendimientos) ?? u?.rendimientoPromedio ?? 0
+/* ---------- Mapeo Supabase -> forma camelCase que ya usaba la UI ---------- */
 
-/* ---------- Transacciones de custodia y entregas ---------- */
+// dos FKs de viajes a unidades (camión y caja) y a viaje_movimientos -- hay que alias-earlos
+export const SELECT_VIAJE = `*,
+  operadores!viajes_chofer_actual_id_fkey(nombre, email),
+  camion:unidades!viajes_camion_actual_id_fkey(numero),
+  caja:unidades!viajes_caja_actual_id_fkey(numero)`
+const SELECT_ENTREGA = '*, clientes(razon_social)'
+const SELECT_MOVIMIENTO = `*,
+  operadores(nombre),
+  camion:unidades!viaje_movimientos_camion_id_fkey(numero)`
 
-// cierra el movimiento activo, crea el nuevo encadenado y actualiza los denormalizados. Todo o nada.
-async function registrarCambio({ viaje, movActivo, chofer, camion, cambiarCaja, caja, odometroCierre, odometroInicioNuevo, motivo }) {
-  await runTransaction(db, async (tx) => {
-    const viajeRef = doc(db, 'viajes', viaje.id)
-    const snap = await tx.get(viajeRef)
-    if (snap.data()?.estatus !== 'en_proceso') throw new Error('El viaje ya no está en proceso')
-    const cierre = odometroCierre ?? null
-    const kmRec = (cierre != null && movActivo.odometroInicio != null)
-      ? Math.max(0, r2(cierre - movActivo.odometroInicio))
-      : null
-    tx.update(doc(db, 'viajes', viaje.id, 'movimientos', movActivo.id), {
-      fechaHoraFin: serverTimestamp(), odometroFin: cierre, kmRecorridos: kmRec, activo: false,
-    })
-    const cajaPlataformaId = cambiarCaja ? (caja?.id ?? null) : (movActivo.cajaPlataformaId ?? null)
-    const cajaNumero = cambiarCaja ? (caja?.numero ?? '') : (viaje.cajaNumero ?? '')
-    tx.set(doc(collection(db, 'viajes', viaje.id, 'movimientos')), {
-      choferId: chofer.id, choferNombre: chofer.nombre, choferEmail: chofer.email ?? '',
-      camionId: camion.id, camionNumero: camion.numero,
-      cajaPlataformaId,
-      fechaHoraInicio: serverTimestamp(), fechaHoraFin: null,
-      // mismo camión: el odómetro continúa; camión nuevo: arranca con su propia lectura
-      odometroInicio: camion.id === movActivo.camionId ? cierre : (odometroInicioNuevo ?? null),
-      odometroFin: null, kmRecorridos: null,
-      motivoCambio: motivo, movimientoAnteriorId: movActivo.id, activo: true,
-    })
-    tx.update(viajeRef, {
-      choferActualId: chofer.id, choferActualNombre: chofer.nombre, choferActualEmail: chofer.email ?? '',
-      camionActualId: camion.id, camionActualNumero: camion.numero,
-      cajaPlataformaId, cajaNumero,
-      operadorId: chofer.id, operadorNombre: chofer.nombre, operadorEmail: chofer.email ?? '',
-      unidadId: camion.id, unidadNumero: camion.numero, cajaId: cajaPlataformaId ?? '',
-      kmTotales: increment(kmRec ?? 0),
-    })
-  })
+// vistas que reemplazan los contadores que antes vivían en el doc del viaje (increment())
+async function cargarResumenes() {
+  const [ent, km, cli] = await Promise.all([
+    supabase.from('v_viaje_entregas_resumen').select('*'),
+    supabase.from('v_viaje_kilometraje').select('*'),
+    supabase.from('v_viaje_clientes').select('*'),
+  ])
+  return {
+    entregas: Object.fromEntries((ent.data ?? []).map((x) => [x.viaje_id, x])),
+    km: Object.fromEntries((km.data ?? []).map((x) => [x.viaje_id, x])),
+    clientes: Object.fromEntries((cli.data ?? []).map((x) => [x.viaje_id, x])),
+  }
 }
 
-// terminar exige cero entregas pendientes (validado también en firestore.rules) y cierra el movimiento activo
-async function terminarViaje({ viaje, movActivo, odometroFin, viaticosComprobados }) {
-  await runTransaction(db, async (tx) => {
-    const viajeRef = doc(db, 'viajes', viaje.id)
-    const snap = await tx.get(viajeRef)
-    const v = snap.data()
-    if (v?.estatus !== 'en_proceso') throw new Error('El viaje ya no está en proceso')
-    if ((v.entregasPendientes ?? 0) > 0) throw new Error(`Hay ${v.entregasPendientes} entrega(s) pendiente(s) — no se puede terminar`)
-    const fin = odometroFin ?? null
-    const kmRec = (fin != null && movActivo?.odometroInicio != null)
-      ? Math.max(0, r2(fin - movActivo.odometroInicio))
-      : null
-    if (movActivo) {
-      tx.update(doc(db, 'viajes', viaje.id, 'movimientos', movActivo.id), {
-        fechaHoraFin: serverTimestamp(), odometroFin: fin, kmRecorridos: kmRec, activo: false,
-      })
+export const mapViaje = (v, resumenes = { entregas: {}, km: {}, clientes: {} }) => {
+  const ent = resumenes.entregas[v.id]
+  const cli = resumenes.clientes[v.id]
+  return {
+    id: v.id,
+    folio: v.folio,
+    fecha: v.fecha,
+    tramoId: v.tramo_id,
+    origen: v.origen,
+    destino: v.destino,
+    km: Number(v.km) || 0,
+    kmFuente: v.km_fuente,
+    precio: Number(v.precio) || 0,
+    costeoEstimado: {
+      dieselUSD: Number(v.costeo_diesel_usd) || 0,
+      pagoChofer: Number(v.costeo_pago_chofer) || 0,
+      total: Number(v.costeo_total) || 0,
+    },
+    viaticosEntregados: Number(v.viaticos_entregados) || 0,
+    viaticosComprobados: Number(v.viaticos_comprobados) || 0,
+    notas: v.notas ?? '',
+    estatus: v.estatus,
+    operadorProvisional: v.operador_provisional,
+    terminadoAt: v.terminado_at,
+    nominaId: v.nomina_id,
+    createdAt: v.created_at,
+    cobranza: {
+      fechaFactura: v.cobranza_fecha_factura,
+      fechaVence: v.cobranza_fecha_vence,
+      facturaURL: v.cobranza_factura_path ?? '',
+      xmlURL: v.cobranza_xml_path ?? '',
+      pagado: v.cobranza_pagado,
+      comprobanteURL: v.cobranza_comprobante_path ?? '',
+      pagadoAt: v.cobranza_pagado_at,
+    },
+    // custodia actual + alias "legacy" (mismo valor -- ya no hay chofer distinto al legacy)
+    choferActualId: v.chofer_actual_id, operadorId: v.chofer_actual_id,
+    choferActualNombre: v.operadores?.nombre ?? '', operadorNombre: v.operadores?.nombre ?? '',
+    choferActualEmail: v.operadores?.email ?? '', operadorEmail: v.operadores?.email ?? '',
+    camionActualId: v.camion_actual_id, unidadId: v.camion_actual_id,
+    camionActualNumero: v.camion?.numero ?? '', unidadNumero: v.camion?.numero ?? '',
+    cajaPlataformaId: v.caja_actual_id, cajaId: v.caja_actual_id,
+    cajaNumero: v.caja?.numero ?? '',
+    // derivados de vistas (antes contadores denormalizados)
+    entregasPendientes: ent?.entregas_pendientes ?? 0,
+    kmTotales: Number(resumenes.km[v.id]?.km_totales) || 0,
+    clientesIds: cli?.cliente_ids ?? [],
+    clienteNombre: cli?.clientes_texto ?? '',
+  }
+}
+
+const mapEntrega = (e) => ({
+  id: e.id,
+  clienteId: e.cliente_id,
+  clienteNombre: e.clientes?.razon_social ?? '',
+  direccionEntregaId: e.direccion_id,
+  direccion: e.direccion_snapshot ?? '',
+  mercancia: e.mercancia ?? '',
+  ordenSecuencia: e.orden_secuencia,
+  estatus: e.estatus,
+  fechaHoraEntregaReal: e.fecha_hora_entrega_real,
+  evidenciaUrl: e.evidencia_path ?? '',
+})
+
+const mapMovimiento = (m) => ({
+  id: m.id,
+  choferId: m.chofer_id,
+  choferNombre: m.operadores?.nombre ?? '',
+  camionId: m.camion_id,
+  camionNumero: m.camion?.numero ?? '',
+  cajaPlataformaId: m.caja_id,
+  fechaHoraInicio: m.fecha_hora_inicio,
+  fechaHoraFin: m.fecha_hora_fin,
+  odometroInicio: m.odometro_inicio != null ? Number(m.odometro_inicio) : null,
+  odometroFin: m.odometro_fin != null ? Number(m.odometro_fin) : null,
+  kmRecorridos: m.km_recorridos != null ? Number(m.km_recorridos) : null,
+  motivoCambio: m.motivo_cambio,
+  movimientoAnteriorId: m.movimiento_anterior_id,
+  activo: m.activo,
+})
+
+// realtime de viajes -- RLS ya scoping por rol (dispatch/admin ven todo, chofer solo lo suyo).
+// escucha viaje_entregas y viaje_movimientos también: entregasPendientes/kmTotales vienen de
+// vistas sobre esas tablas, no de un campo en viajes, así que un cambio ahí no dispara el
+// canal de 'viajes' por sí solo.
+export function useViajes() {
+  const [viajes, setViajes] = useState(null)
+  useEffect(() => {
+    const cargar = async () => {
+      const [{ data, error }, resumenes] = await Promise.all([
+        supabase.from('viajes').select(SELECT_VIAJE),
+        cargarResumenes(),
+      ])
+      if (error) { console.error(error); return }
+      setViajes(data.map((v) => mapViaje(v, resumenes)))
     }
-    tx.update(viajeRef, {
-      estatus: 'terminado', terminadoAt: serverTimestamp(),
-      viaticosComprobados: viaticosComprobados ?? (v.viaticosComprobados || 0),
-      kmTotales: increment(kmRec ?? 0),
-    })
-  })
+    cargar()
+    const canal = supabase
+      .channel(`viajes-cambios-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, cargar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_entregas' }, cargar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_movimientos' }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [])
+  return viajes
 }
 
-// entregada + decremento del contador en el padre (lo usa admin y la PWA del chofer)
-export async function marcarEntregada(viajeId, entrega, evidenciaUrl) {
-  await runTransaction(db, async (tx) => {
-    tx.update(doc(db, 'viajes', viajeId, 'entregas', entrega.id), {
-      estatus: 'entregada', fechaHoraEntregaReal: serverTimestamp(), evidenciaUrl: evidenciaUrl || '',
-    })
-    tx.update(doc(db, 'viajes', viajeId), { entregasPendientes: increment(-1) })
-  })
+// entregada: ya no hay contador que decrementar en el padre (viene de la vista)
+export async function marcarEntregada(entregaId, evidenciaPath) {
+  const { error } = await supabase.from('viaje_entregas').update({
+    estatus: 'entregada', fecha_hora_entrega_real: new Date().toISOString(), evidencia_path: evidenciaPath || null,
+  }).eq('id', entregaId)
+  if (error) throw error
 }
 
-export default function Viajes({ usuario, vista }) {
-  if (vista === 'mis-viajes') return <MisViajes usuario={usuario} />
+export default function Viajes({ vista }) {
+  if (vista === 'mis-viajes') return <MisViajes />
   if (vista === 'cobranza') return <Cobranza />
   return <ListaViajes />
 }
 
-/* ---------- Lista + formulario (admin) ---------- */
+/* ---------- Lista + formulario (dispatch/admin) ---------- */
 
 function ListaViajes() {
-  const [viajes, setViajes] = useState(null)
+  const viajes = useViajes()
   const [editando, setEditando] = useState(null) // viaje | 'nuevo' | null
   const [fEstatus, setFEstatus] = useState('en_proceso')
-
-  useEffect(() => onSnapshot(collection(db, 'viajes'),
-    (s) => setViajes(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
 
   if (editando) {
     return <ViajeForm viaje={editando === 'nuevo' ? null : editando} onDone={() => setEditando(null)} />
@@ -206,12 +267,13 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
 function ViajeForm({ viaje, onDone }) {
   const unidades = useUnidades()
   const tc = useTipoCambio()
-  const clientes = useColeccion('clientes') ?? []
-  const operadores = useColeccion('operadores') ?? []
-  const tramos = useColeccion('tabuladores') ?? []
+  const clientes = useClientes() ?? []
+  const operadores = useOperadores() ?? []
+  const tramos = useTabuladores() ?? []
   const [config, setConfig] = useState(null)
+  const [rendMap, setRendMap] = useState({})
   const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
-  const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven en subcolección
+  const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven aparte
   const [dirs, setDirs] = useState({}) // cache de direcciones por cliente
   const [movs, setMovs] = useState(viaje ? null : [])
   const [modalCambio, setModalCambio] = useState(false)
@@ -221,27 +283,40 @@ function ViajeForm({ viaje, onDone }) {
 
   useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => setConfig(s.data() ?? {}), console.error), [])
 
+  // mediana de rendimiento por unidad -- ya no vive en el doc de la unidad (ver diesel.jsx)
+  useEffect(() => {
+    supabase.from('v_rendimiento_unidades').select('unidad_id, rendimiento_mediana').then(({ data, error }) => {
+      if (!error) setRendMap(Object.fromEntries(data.map((r) => [r.unidad_id, Number(r.rendimiento_mediana)])))
+    })
+  }, [])
+
   // historial de movimientos (cadena de custodia) del viaje existente
   useEffect(() => {
     if (!viaje) return
-    return onSnapshot(collection(db, 'viajes', viaje.id, 'movimientos'),
-      (s) => setMovs(
-        s.docs.map((d) => ({ id: d.id, ...d.data() }))
-          .sort((a, b) => (a.fechaHoraInicio?.seconds ?? 0) - (b.fechaHoraInicio?.seconds ?? 0)),
-      ), console.error)
+    const cargar = () => supabase.from('viaje_movimientos').select(SELECT_MOVIMIENTO).eq('viaje_id', viaje.id)
+      .then(({ data, error }) => {
+        if (error) { console.error(error); return }
+        setMovs(data.map(mapMovimiento).sort((a, b) => new Date(a.fechaHoraInicio) - new Date(b.fechaHoraInicio)))
+      })
+    cargar()
+    const canal = supabase
+      .channel(`viaje-movimientos-${viaje.id}-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_movimientos', filter: `viaje_id=eq.${viaje.id}` }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
   }, [viaje?.id])
 
   const cargarDirs = (cid) => {
     if (!cid || dirs[cid]) return
-    getDocs(collection(db, 'clientes', cid, 'direcciones'))
-      .then((s) => setDirs((prev) => ({ ...prev, [cid]: s.docs.map((d) => ({ id: d.id, ...d.data() })) })))
+    cargarDirecciones(cid)
+      .then((direcciones) => setDirs((prev) => ({ ...prev, [cid]: direcciones })))
       .catch(console.error)
   }
 
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
   const movActivo = (movs ?? []).find((m) => m.activo) ?? null
-  const camionActualId = viaje ? (viaje.camionActualId ?? viaje.unidadId) : f.unidadId
+  const camionActualId = viaje ? viaje.camionActualId : f.unidadId
   const unidad = unidades.find((u) => u.id === camionActualId)
   const tramo = tramos.find((t) => t.id === f.tramoId)
   const operadorBase = operadores.find((o) => o.unidadBaseId === f.unidadId)
@@ -260,7 +335,7 @@ function ViajeForm({ viaje, onDone }) {
 
   // costeo estimado: diésel (km / mediana de rendimientos × $/L, a USD) + pago chofer del tabulador
   const km = Number(f.km) || 0
-  const rendimiento = rendimientoCosteo(unidad)
+  const rendimiento = rendMap[camionActualId] ?? 0
   const precioLitro = config?.precioDieselLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
   const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
@@ -277,76 +352,45 @@ function ViajeForm({ viaje, onDone }) {
     if (!(km > 0)) { alert('Escribe los kilómetros del viaje'); return }
     setGuardando(true)
     try {
-      const comunes = {
-        fecha: f.fecha,
-        tramoId: f.tramoId,
-        origen: tramo?.origen ?? viaje?.origen ?? '',
-        destino: tramo?.destino ?? viaje?.destino ?? '',
-        km,
-        kmFuente: 'manual', // cambiar a 'maps' cuando se integre Distance Matrix
-        precio: Number(f.precio) || 0,
-        costeoEstimado: { dieselUSD: costoDieselUSD, pagoChofer, total: costeoTotal },
-        viaticosEntregados: Number(f.viaticosEntregados) || 0,
-        viaticosComprobados: Number(f.viaticosComprobados) || 0,
-        notas: f.notas,
-      }
       if (viaje) {
         // chofer/camión/caja NO se tocan aquí: solo la transacción de cambio de movimiento
-        await updateDoc(doc(db, 'viajes', viaje.id), comunes)
+        const { error } = await supabase.from('viajes').update({
+          fecha: f.fecha,
+          tramo_id: f.tramoId || null,
+          origen: tramo?.origen ?? viaje.origen ?? '',
+          destino: tramo?.destino ?? viaje.destino ?? '',
+          km,
+          precio: Number(f.precio) || 0,
+          costeo_diesel_usd: costoDieselUSD, costeo_pago_chofer: pagoChofer, costeo_total: costeoTotal,
+          tipo_cambio_usado: tc,
+          viaticos_entregados: Number(f.viaticosEntregados) || 0,
+          viaticos_comprobados: Number(f.viaticosComprobados) || 0,
+          notas: f.notas || null,
+        }).eq('id', viaje.id)
+        if (error) throw error
       } else {
-        const caja = unidades.find((u) => u.id === f.cajaId)
-        const clientesIds = [...new Set(entregasValidas.map((e) => e.clienteId))]
-        const nombres = clientesIds.map((id) => clientes.find((c) => c.id === id)?.razonSocial ?? '').filter(Boolean)
-        // folio + viaje + primer movimiento + entregas: una sola transacción,
-        // nunca existe un viaje sin movimiento
-        await runTransaction(db, async (tx) => {
-          const cfgRef = doc(db, 'config', 'general')
-          const cfg = await tx.get(cfgRef)
-          const n = (cfg.data()?.ultimoViaje ?? 0) + 1
-          tx.update(cfgRef, { ultimoViaje: n })
-          const viajeRef = doc(collection(db, 'viajes'))
-          tx.set(viajeRef, {
-            ...comunes,
-            folio: 'V-' + String(n).padStart(4, '0'),
-            clientesIds,
-            clienteId: clientesIds[0],
-            clienteNombre: nombres.join(' + '),
-            estatus: 'en_proceso',
-            choferActualId: operador.id, choferActualNombre: operador.nombre, choferActualEmail: operador.email ?? '',
-            camionActualId: f.unidadId, camionActualNumero: unidad?.numero ?? '',
-            cajaPlataformaId: f.cajaId || null, cajaNumero: caja?.numero ?? '',
-            // legacy sincronizado: nómina, rules y PWA chofer leen estos campos
-            operadorId: operador.id, operadorNombre: operador.nombre, operadorEmail: operador.email ?? '',
-            operadorProvisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
-            unidadId: f.unidadId, unidadNumero: unidad?.numero ?? '', cajaId: f.cajaId,
-            entregasPendientes: entregasValidas.length,
-            kmTotales: 0,
-            cobranza: { fechaFactura: '', fechaVence: '', facturaURL: '', xmlURL: '', pagado: false, comprobanteURL: '' },
-            createdAt: serverTimestamp(),
-          })
-          tx.set(doc(collection(db, 'viajes', viajeRef.id, 'movimientos')), {
-            choferId: operador.id, choferNombre: operador.nombre, choferEmail: operador.email ?? '',
-            camionId: f.unidadId, camionNumero: unidad?.numero ?? '',
-            cajaPlataformaId: f.cajaId || null,
-            fechaHoraInicio: serverTimestamp(), fechaHoraFin: null,
-            odometroInicio: Number(f.odometroInicio) || null,
-            odometroFin: null, kmRecorridos: null,
-            motivoCambio: null, movimientoAnteriorId: null, activo: true,
-          })
-          entregasValidas.forEach((e, i) => {
-            const dir = (dirs[e.clienteId] ?? []).find((d) => d.id === e.direccionEntregaId)
-            tx.set(doc(collection(db, 'viajes', viajeRef.id, 'entregas')), {
-              clienteId: e.clienteId,
-              clienteNombre: clientes.find((c) => c.id === e.clienteId)?.razonSocial ?? '',
-              direccionEntregaId: e.direccionEntregaId,
-              direccion: dir ? direccionTexto(dir) : '',
-              mercancia: e.mercancia,
-              ordenSecuencia: i + 1,
-              estatus: 'pendiente',
-              fechaHoraEntregaReal: null, evidenciaUrl: '',
-            })
-          })
+        const entregasJson = entregasValidas.map((e) => {
+          const dir = (dirs[e.clienteId] ?? []).find((d) => d.id === e.direccionEntregaId)
+          return {
+            cliente_id: e.clienteId,
+            direccion_id: e.direccionEntregaId,
+            direccion_snapshot: dir ? direccionTexto(dir) : '',
+            mercancia: e.mercancia,
+          }
         })
+        const { error } = await supabase.rpc('crear_viaje', {
+          p_fecha: f.fecha, p_tramo_id: f.tramoId || null,
+          p_origen: tramo?.origen ?? '', p_destino: tramo?.destino ?? '',
+          p_km: km, p_precio: Number(f.precio) || 0,
+          p_costeo_diesel_usd: costoDieselUSD, p_costeo_pago_chofer: pagoChofer, p_costeo_total: costeoTotal,
+          p_tipo_cambio_usado: tc,
+          p_viaticos_entregados: Number(f.viaticosEntregados) || 0, p_notas: f.notas || null,
+          p_chofer_id: operador.id, p_camion_id: f.unidadId, p_caja_id: f.cajaId || null,
+          p_odometro_inicio: Number(f.odometroInicio) || null,
+          p_operador_provisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
+          p_entregas: entregasJson,
+        })
+        if (error) throw error
       }
       onDone()
     } catch (e) {
@@ -361,11 +405,12 @@ function ViajeForm({ viaje, onDone }) {
     if (!confirm('¿Confirmar que el viaje terminó? Se registrarán los viáticos comprobados.')) return
     setGuardando(true)
     try {
-      await terminarViaje({
-        viaje, movActivo,
-        odometroFin: Number(odometroFin) || null,
-        viaticosComprobados: Number(f.viaticosComprobados) || 0,
+      const { error } = await supabase.rpc('terminar_viaje', {
+        p_viaje_id: viaje.id,
+        p_odometro_fin: Number(odometroFin) || null,
+        p_viaticos_comprobados: Number(f.viaticosComprobados) || 0,
       })
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)
@@ -430,9 +475,9 @@ function ViajeForm({ viaje, onDone }) {
             )}
           </div>
           <p>
-            Chofer: <strong>{viaje.choferActualNombre ?? viaje.operadorNombre}</strong>
-            {' · '}Camión: <strong>{viaje.camionActualNumero ?? viaje.unidadNumero}</strong>
-            {(viaje.cajaNumero || viaje.cajaId) && <> · Caja: <strong>{viaje.cajaNumero || viaje.cajaId}</strong></>}
+            Chofer: <strong>{viaje.choferActualNombre}</strong>
+            {' · '}Camión: <strong>{viaje.camionActualNumero}</strong>
+            {viaje.cajaNumero && <> · Caja: <strong>{viaje.cajaNumero}</strong></>}
           </p>
           {viaje.kmTotales > 0 && <p className="muted">Km recorridos (movimientos): {viaje.kmTotales.toLocaleString()}</p>}
         </div>
@@ -461,7 +506,7 @@ function ViajeForm({ viaje, onDone }) {
         </label>
       </div>
 
-      {/* entregas: en alta son filas locales que la transacción crea; en edición viven en la subcolección */}
+      {/* entregas: en alta son filas locales que la RPC crea; en edición viven en Supabase */}
       {!viaje && (
         <>
           <h3>Entregas ({entregas.length})</h3>
@@ -568,28 +613,35 @@ function ViajeForm({ viaje, onDone }) {
   )
 }
 
-/* ---------- Entregas del viaje (subcolección, admin) ---------- */
+/* ---------- Entregas del viaje (dispatch/admin) ---------- */
 
 function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
   const [entregas, setEntregas] = useState(null)
   const [nueva, setNueva] = useState(null) // entregaVacia() | null
 
-  useEffect(() => onSnapshot(collection(db, 'viajes', viaje.id, 'entregas'),
-    (s) => setEntregas(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)),
-    ), console.error), [viaje.id])
+  useEffect(() => {
+    const cargar = () => supabase.from('viaje_entregas').select(SELECT_ENTREGA).eq('viaje_id', viaje.id)
+      .then(({ data, error }) => {
+        if (error) { console.error(error); return }
+        setEntregas(data.map(mapEntrega).sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)))
+      })
+    cargar()
+    const canal = supabase
+      .channel(`viaje-entregas-${viaje.id}-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_entregas', filter: `viaje_id=eq.${viaje.id}` }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [viaje.id])
 
   const lista = entregas ?? []
 
   const mover = async (i, dir) => {
     const a = lista[i], b = lista[i + dir]
     if (!a || !b) return
-    // intercambio de secuencia en un batch: nunca queda a medias
-    const batch = writeBatch(db)
-    batch.update(doc(db, 'viajes', viaje.id, 'entregas', a.id), { ordenSecuencia: b.ordenSecuencia })
-    batch.update(doc(db, 'viajes', viaje.id, 'entregas', b.id), { ordenSecuencia: a.ordenSecuencia })
-    await batch.commit().catch((e) => alert('Error: ' + e.message))
+    try {
+      await supabase.from('viaje_entregas').update({ orden_secuencia: b.ordenSecuencia }).eq('id', a.id).throwOnError()
+      await supabase.from('viaje_entregas').update({ orden_secuencia: a.ordenSecuencia }).eq('id', b.id).throwOnError()
+    } catch (e) { alert('Error: ' + e.message) }
   }
 
   const agregar = async () => {
@@ -597,19 +649,15 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
     try {
       const dir = (dirs[nueva.clienteId] ?? []).find((d) => d.id === nueva.direccionEntregaId)
       const orden = Math.max(0, ...lista.map((e) => e.ordenSecuencia ?? 0)) + 1
-      await runTransaction(db, async (tx) => {
-        tx.set(doc(collection(db, 'viajes', viaje.id, 'entregas')), {
-          clienteId: nueva.clienteId,
-          clienteNombre: clientes.find((c) => c.id === nueva.clienteId)?.razonSocial ?? '',
-          direccionEntregaId: nueva.direccionEntregaId,
-          direccion: dir ? direccionTexto(dir) : '',
-          mercancia: nueva.mercancia,
-          ordenSecuencia: orden,
-          estatus: 'pendiente',
-          fechaHoraEntregaReal: null, evidenciaUrl: '',
-        })
-        tx.update(doc(db, 'viajes', viaje.id), { entregasPendientes: increment(1) })
+      const { error } = await supabase.from('viaje_entregas').insert({
+        viaje_id: viaje.id,
+        cliente_id: nueva.clienteId,
+        direccion_id: nueva.direccionEntregaId,
+        direccion_snapshot: dir ? direccionTexto(dir) : '',
+        mercancia: nueva.mercancia,
+        orden_secuencia: orden,
       })
+      if (error) throw error
       setNueva(null)
     } catch (e) { alert('Error: ' + e.message) }
   }
@@ -617,18 +665,14 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
   const eliminar = async (entrega) => {
     if (!confirm(`¿Eliminar la entrega de ${entrega.clienteNombre}?`)) return
     try {
-      await runTransaction(db, async (tx) => {
-        tx.delete(doc(db, 'viajes', viaje.id, 'entregas', entrega.id))
-        if (entrega.estatus === 'pendiente') {
-          tx.update(doc(db, 'viajes', viaje.id), { entregasPendientes: increment(-1) })
-        }
-      })
+      const { error } = await supabase.from('viaje_entregas').delete().eq('id', entrega.id)
+      if (error) throw error
     } catch (e) { alert('Error: ' + e.message) }
   }
 
   const entregar = async (entrega) => {
     if (!confirm(`¿Marcar como entregada la entrega de ${entrega.clienteNombre}?`)) return
-    try { await marcarEntregada(viaje.id, entrega, '') } catch (e) { alert('Error: ' + e.message) }
+    try { await marcarEntregada(entrega.id, '') } catch (e) { alert('Error: ' + e.message) }
   }
 
   return (
@@ -636,7 +680,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
       <h3>Entregas ({lista.length}{viaje.entregasPendientes > 0 ? ` · ${viaje.entregasPendientes} pendientes` : ''})</h3>
       {entregas === null && <p className="muted">Cargando…</p>}
       {entregas !== null && lista.length === 0 && (
-        <p className="muted">Sin entregas registradas (viaje anterior a la migración).</p>
+        <p className="muted">Sin entregas registradas.</p>
       )}
       {lista.length > 0 && (
         <div className="tabla-scroll">
@@ -699,7 +743,7 @@ function MovimientosTimeline({ movs }) {
       <h3>Historial de movimientos</h3>
       {movs === null && <p className="muted">Cargando…</p>}
       {movs !== null && movs.length === 0 && (
-        <p className="muted">Sin movimientos registrados (viaje anterior a la migración).</p>
+        <p className="muted">Sin movimientos registrados.</p>
       )}
       {movs?.length > 0 && (
         <div className="timeline">
@@ -741,14 +785,14 @@ function ModalCambio({ viaje, movActivo, operadores, unidades, onDone }) {
     if (!f.motivo.trim()) { alert('Describe el motivo del cambio'); return }
     setGuardando(true)
     try {
-      await registrarCambio({
-        viaje, movActivo, chofer, camion,
-        cambiarCaja: f.cambiarCaja,
-        caja: unidades.find((u) => u.id === f.cajaId) ?? null,
-        odometroCierre: Number(f.odometroCierre) || null,
-        odometroInicioNuevo: Number(f.odometroInicioNuevo) || null,
-        motivo: f.motivo.trim(),
+      const { error } = await supabase.rpc('registrar_cambio_custodia', {
+        p_viaje_id: viaje.id, p_chofer_id: chofer.id, p_camion_id: camion.id,
+        p_caja_id: (f.cambiarCaja ? f.cajaId : movActivo.cajaPlataformaId) || null,
+        p_odometro_cierre: Number(f.odometroCierre) || null,
+        p_odometro_inicio_nuevo: Number(f.odometroInicioNuevo) || null,
+        p_motivo: f.motivo.trim(),
       })
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)
@@ -822,17 +866,9 @@ function ModalCambio({ viaje, movActivo, operadores, unidades, onDone }) {
 
 /* ---------- Mis viajes (chofer) ---------- */
 
-function MisViajes({ usuario }) {
-  const [viajes, setViajes] = useState(null)
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'viajes'), where('operadorEmail', '==', usuario.email)),
-    (s) => setViajes(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (b.folio || '').localeCompare(a.folio || '')),
-    ),
-    console.error,
-  ), [usuario.email])
+function MisViajes() {
+  // RLS ya limita a los viajes donde el chofer es el actual -- no hace falta filtrar por email
+  const viajes = useViajes()
 
   return (
     <div>
@@ -863,11 +899,19 @@ function EntregasChofer({ viajeId }) {
   const [fotos, setFotos] = useState({}) // entregaId -> File
   const [subiendo, setSubiendo] = useState('')
 
-  useEffect(() => onSnapshot(collection(db, 'viajes', viajeId, 'entregas'),
-    (s) => setEntregas(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)),
-    ), console.error), [viajeId])
+  useEffect(() => {
+    const cargar = () => supabase.from('viaje_entregas').select(SELECT_ENTREGA).eq('viaje_id', viajeId)
+      .then(({ data, error }) => {
+        if (error) { console.error(error); return }
+        setEntregas(data.map(mapEntrega).sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)))
+      })
+    cargar()
+    const canal = supabase
+      .channel(`entregas-chofer-${viajeId}-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_entregas', filter: `viaje_id=eq.${viajeId}` }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [viajeId])
 
   const entregar = async (e) => {
     if (!confirm(`¿Marcar como entregada la entrega de ${e.clienteNombre}?`)) return
@@ -875,7 +919,7 @@ function EntregasChofer({ viajeId }) {
     try {
       const archivo = fotos[e.id]
       const url = archivo ? await subirArchivo(`viajes/${viajeId}/pod_${e.id}_${archivo.name}`, archivo) : ''
-      await marcarEntregada(viajeId, e, url)
+      await marcarEntregada(e.id, url)
     } catch (err) {
       console.error(err)
       alert('Error: ' + err.message)
@@ -919,11 +963,8 @@ function EntregasChofer({ viajeId }) {
 /* ---------- Cobranza / Cuentas por Cobrar (admin) ---------- */
 
 function Cobranza() {
-  const [viajes, setViajes] = useState(null)
+  const viajes = useViajes()
   const [detalle, setDetalle] = useState(null)
-
-  useEffect(() => onSnapshot(collection(db, 'viajes'),
-    (s) => setViajes(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [])
 
   if (detalle) {
     const v = (viajes ?? []).find((x) => x.id === detalle.id) ?? detalle
@@ -981,14 +1022,15 @@ function Cobranza() {
 }
 
 function CobranzaDetalle({ viaje, onVolver }) {
-  const clientes = useColeccion('clientes') ?? []
+  const clientes = useClientes() ?? []
   const [fechaFactura, setFechaFactura] = useState(viaje.cobranza?.fechaFactura || hoy())
   const [pdf, setPdf] = useState(null)
   const [xml, setXml] = useState(null)
   const [comprobante, setComprobante] = useState(null)
   const [guardando, setGuardando] = useState(false)
 
-  const cliente = clientes.find((c) => c.id === viaje.clienteId)
+  // viaje puede tener varios clientes (multi-drop); el crédito se calcula sobre el primero
+  const cliente = clientes.find((c) => c.id === viaje.clientesIds?.[0])
   const cobranza = viaje.cobranza ?? {}
   const facturado = Boolean(cobranza.fechaFactura)
 
@@ -999,15 +1041,13 @@ function CobranzaDetalle({ viaje, onVolver }) {
       const diasCredito = cliente?.diasCredito ?? 0
       const facturaURL = pdf ? await subirArchivo(`viajes/${viaje.id}/factura_${pdf.name}`, pdf) : (cobranza.facturaURL || '')
       const xmlURL = xml ? await subirArchivo(`viajes/${viaje.id}/xml_${xml.name}`, xml) : (cobranza.xmlURL || '')
-      await updateDoc(doc(db, 'viajes', viaje.id), {
-        cobranza: {
-          ...cobranza,
-          fechaFactura,
-          // vencimiento estático: fecha factura + días de crédito del cliente
-          fechaVence: sumaDias(fechaFactura, diasCredito),
-          facturaURL, xmlURL,
-        },
-      })
+      const { error } = await supabase.from('viajes').update({
+        cobranza_fecha_factura: fechaFactura,
+        // vencimiento estático: fecha factura + días de crédito del cliente
+        cobranza_fecha_vence: sumaDias(fechaFactura, diasCredito),
+        cobranza_factura_path: facturaURL || null, cobranza_xml_path: xmlURL || null,
+      }).eq('id', viaje.id)
+      if (error) throw error
       // el ingreso entra al balance del mes de facturación (solo la primera vez)
       if (!facturado) {
         await incBalance(fechaFactura.slice(0, 7), { ingresosViajes: viaje.precio || 0 })
@@ -1028,9 +1068,10 @@ function CobranzaDetalle({ viaje, onVolver }) {
       const comprobanteURL = comprobante
         ? await subirArchivo(`viajes/${viaje.id}/pago_${comprobante.name}`, comprobante)
         : (cobranza.comprobanteURL || '')
-      await updateDoc(doc(db, 'viajes', viaje.id), {
-        cobranza: { ...cobranza, pagado: true, comprobanteURL, pagadoAt: hoy() },
-      })
+      const { error } = await supabase.from('viajes').update({
+        cobranza_pagado: true, cobranza_comprobante_path: comprobanteURL || null, cobranza_pagado_at: hoy(),
+      }).eq('id', viaje.id)
+      if (error) throw error
       alert('Viaje marcado como pagado')
     } catch (e) {
       console.error(e)
