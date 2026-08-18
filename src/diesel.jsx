@@ -1,18 +1,82 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  addDoc, collection, doc, getDocs, limit, onSnapshot, orderBy, query, runTransaction,
-  serverTimestamp, updateDoc, where,
-} from 'firebase/firestore'
-import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
-import { mediana, esAtipico } from './costeo'
-import { BadgeMantenimiento, useUnidades, SelectorUnidad } from './compras'
+import { mediana } from './costeo'
+import { BadgeMantenimiento, useUnidades, SelectorUnidad, CampoOdometro, useTabla } from './compras'
+import { useOperadores, useEstacionesGasolinera, estacionTexto } from './catalogos'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
 
-/* Módulo Diésel: captura del chofer en ruta, rendimientos por unidad
-   (array estático en el doc de la unidad, sin consultas de historial),
-   reportes de falla al taller y dashboard de rendimiento para admin. */
+/* Módulo Diésel: captura del chofer en ruta, rendimientos por unidad, reportes de falla al
+   taller y dashboard de rendimiento para admin. Migrado a Supabase (antes Firestore) --
+   `registrar_carga_diesel` (RPC) hace el cálculo de rendimiento/atípico y las 3 escrituras
+   (carga + unidades.ultima_lectura + reporte automático si es atípico) de forma atómica. */
+
+// dos FKs de cargas_diesel a unidades (la unidad que carga y, opcional, la caja refrigerada)
+const SELECT_CARGA = `*,
+  unidades!cargas_diesel_unidad_id_fkey(numero),
+  operadores(nombre, email),
+  viajes(folio),
+  caja:unidades!cargas_diesel_caja_id_fkey(numero)`
+
+// misma forma camelCase que ya usaban los docs de Firestore, para no tocar conciliacion.jsx
+// ni la lógica de abajo (statsPorUnidad, exportar) más de lo necesario
+const mapCarga = (c) => ({
+  id: c.id,
+  fecha: c.fecha,
+  unidadId: c.unidad_id,
+  unidadNumero: c.unidades?.numero ?? '',
+  estacion: c.estacion ?? '',
+  litros: Number(c.litros) || 0,
+  costoLitro: Number(c.costo_litro) || 0,
+  costoTotal: Number(c.costo_total) || 0,
+  odometro: Number(c.odometro) || 0,
+  unidadLectura: 'km', // homologado -- ver CampoOdometro, ya no depende de la unidad física
+  rendimiento: c.rendimiento != null ? Number(c.rendimiento) : null,
+  esAtipico: c.es_atipico,
+  viajeId: c.viaje_id,
+  viajeFolio: c.viajes?.folio ?? null,
+  movimientoId: c.movimiento_id,
+  caja: c.caja_id ? {
+    cajaId: c.caja_id,
+    cajaNumero: c.caja?.numero ?? '',
+    horasTermo: Number(c.caja_horas_termo) || 0,
+    litros: Number(c.caja_litros) || 0,
+    costo: Number(c.caja_costo) || 0,
+  } : null,
+  notas: c.notas ?? '',
+  operadorEmail: c.operadores?.email ?? '',
+  operadorNombre: c.operadores?.nombre ?? '',
+  createdAt: c.created_at,
+})
+
+export const useCargas = (limite) => useTabla('cargas_diesel', mapCarga,
+  (q) => (limite
+    ? q.select(SELECT_CARGA).order('created_at', { ascending: false }).limit(limite)
+    : q.select(SELECT_CARGA).order('created_at', { ascending: false })))
+
+// consulta puntual (no realtime) por rango de fecha -- para Conciliación, que solo lee al elegir un mes
+export async function cargasEnRango(desde, hasta) {
+  const { data, error } = await supabase.from('cargas_diesel').select(SELECT_CARGA)
+    .gte('fecha', desde).lte('fecha', hasta)
+  if (error) throw error
+  return data.map(mapCarga)
+}
+
+const SELECT_REPORTE = '*, unidades(numero), operadores(nombre)'
+
+const mapReporte = (r) => ({
+  id: r.id,
+  fecha: r.fecha,
+  unidadId: r.unidad_id,
+  unidadNumero: r.unidades?.numero ?? '',
+  descripcion: r.descripcion,
+  estatus: r.estatus,
+  operadorId: r.operador_id,
+  operadorNombre: r.operadores?.nombre ?? '',
+  automatico: r.automatico,
+  createdAt: r.created_at,
+  atendidoAt: r.atendido_at,
+})
 
 const haceUnMes = () => {
   const d = new Date()
@@ -30,18 +94,32 @@ export default function Diesel({ usuario, vista }) {
 /* ---------- Captura de carga (chofer / admin) ---------- */
 
 const cargaVacia = () => ({
-  unidadId: '', estacion: '', litros: '', costoLitro: '', odometro: '',
+  unidadId: '', estacionId: '', estacion: '', litros: '', costoLitro: '', odometro: '',
   conCaja: false, cajaId: '', horasTermo: '', litrosCaja: '',
   notas: '',
 })
 
 function CargaDiesel({ usuario }) {
   const unidades = useUnidades()
+  const operadores = useOperadores() ?? [] // RLS: para rol chofer, solo trae su propia fila
+  const estaciones = useEstacionesGasolinera() ?? []
   const [f, setF] = useState(cargaVacia)
+  const [estacionModo, setEstacionModo] = useState('catalogo') // 'catalogo' | 'otra'
   const [guardando, setGuardando] = useState(false)
-  const [cargas, setCargas] = useState(null)
+  // CampoOdometro guarda su texto/unidad como estado interno (no lo controla f.odometro) --
+  // cambiar su `key` fuerza un remount limpio al guardar, si no el odómetro no se borraba
+  const [resetKey, setResetKey] = useState(0)
+  const cargas = useCargas(20) // RLS ya limita a las propias del chofer; admin ve todas
   const [viajesEnCurso, setViajesEnCurso] = useState([])
   const [viajeId, setViajeId] = useState('')
+
+  // default: unidad asignada al chofer (unidad_base_id); se puede cambiar a mano
+  // si esa unidad está fuera de servicio y le tocó otra
+  useEffect(() => {
+    if (usuario.rol !== 'chofer' || f.unidadId) return
+    const base = operadores.find((o) => o.perfilId === usuario.id)
+    if (base?.unidadBaseId) setF((prev) => (prev.unidadId ? prev : { ...prev, unidadId: base.unidadBaseId }))
+  }, [usuario.rol, usuario.id, operadores, f.unidadId])
 
   // viajes en proceso del chofer, para atribuir el diésel al movimiento activo -- RLS de
   // Supabase ya limita "viajes" al chofer actual, no hace falta filtrar por email
@@ -53,21 +131,6 @@ function CargaDiesel({ usuario }) {
       setViajeId((prev) => (data.some((v) => v.id === prev) ? prev : (data[0]?.id ?? '')))
     })
   }, [usuario.rol])
-
-  // el chofer ve sus propias cargas recientes; admin ve todas.
-  // orden en cliente para no requerir índice compuesto (patrón de taller.jsx)
-  useEffect(() => onSnapshot(
-    query(
-      collection(db, 'cargasDiesel'),
-      ...(usuario.rol === 'admin' ? [] : [where('operadorEmail', '==', usuario.email)]),
-    ),
-    (s) => setCargas(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0))
-        .slice(0, 20),
-    ),
-    console.error,
-  ), [usuario.email, usuario.rol])
 
   const unidad = unidades.find((u) => u.id === f.unidadId)
   const litros = Number(f.litros) || 0
@@ -86,81 +149,26 @@ function CargaDiesel({ usuario }) {
       return
     }
     if (f.conCaja && !f.cajaId) { alert('Selecciona la caja refrigerada'); return }
+    const miOperadorId = operadores.find((o) => o.perfilId === usuario.id)?.id
+    if (!miOperadorId) { alert('Tu cuenta no está vinculada a un operador -- avisa a Catálogos.'); return }
     setGuardando(true)
     try {
-      const caja = unidades.find((u) => u.id === f.cajaId)
-      // liga al movimiento activo del viaje: el consumo se atribuye al chofer/camión del tramo
-      let liga = { viajeId: null, viajeFolio: null, movimientoId: null }
-      if (viajeId) {
-        const { data: movs } = await supabase.from('viaje_movimientos').select('id').eq('viaje_id', viajeId).eq('activo', true).limit(1)
-        liga = {
-          viajeId,
-          viajeFolio: viajesEnCurso.find((v) => v.id === viajeId)?.folio ?? null,
-          movimientoId: movs?.[0]?.id ?? null,
-        }
-      }
-      // rendimiento = distancia recorrida desde la última carga / litros
-      // ponytail: unidades ya vive en Supabase, cargasDiesel sigue en Firestore -- no hay
-      // transacción cruzada posible entre las dos bases. El historial de rendimientos ya no vive
-      // en el doc de la unidad (Supabase no tiene esas columnas): se deriva de las últimas
-      // cargas de diésel de esta unidad, que siguen siendo la fuente real del dato.
-      const rendimiento = (unidad.ultimaLectura != null && odometro > unidad.ultimaLectura)
-        ? r2((odometro - unidad.ultimaLectura) / litros)
-        : null
-      const previosSnap = await getDocs(query(
-        collection(db, 'cargasDiesel'),
-        where('unidadId', '==', f.unidadId),
-        orderBy('createdAt', 'desc'),
-        limit(5),
-      ))
-      const previos = previosSnap.docs.map((d) => d.data().rendimiento).filter((r) => r != null)
-      // el dato atípico se guarda igual (es historia real), solo queda marcado
-      const atipico = rendimiento != null && esAtipico(rendimiento, previos)
-      await runTransaction(db, async (tx) => {
-        tx.set(doc(collection(db, 'cargasDiesel')), {
-          fecha: hoy(),
-          unidadId: f.unidadId,
-          unidadNumero: unidad.numero,
-          estacion: f.estacion,
-          litros, costoLitro, costoTotal,
-          odometro,
-          unidadLectura: unidad.unidadLectura,
-          rendimiento,
-          esAtipico: atipico,
-          ...liga,
-          caja: f.conCaja ? {
-            cajaId: f.cajaId,
-            cajaNumero: caja?.numero ?? '',
-            horasTermo: Number(f.horasTermo) || 0,
-            litros: litrosCaja,
-            costo: costoCaja,
-          } : null,
-          notas: f.notas,
-          operadorEmail: usuario.email,
-          operadorNombre: usuario.nombre,
-          createdAt: serverTimestamp(),
-        })
-        if (atipico) {
-          // alerta a la bandeja que taller ya vigila; misma forma que un reporte manual
-          tx.set(doc(collection(db, 'reportesFalla')), {
-            fecha: hoy(),
-            unidadId: f.unidadId,
-            unidadNumero: unidad.numero,
-            descripcion: `Posible falla mecánica o error de captura en unidad ${unidad.numero}: `
-              + `rendimiento ${rendimiento} ${unidad.unidadLectura}/L vs mediana ${mediana(previos)} ${unidad.unidadLectura}/L. `
-              + 'Alerta generada automáticamente al registrar diésel.',
-            estatus: 'abierto',
-            operadorEmail: usuario.email,
-            operadorNombre: usuario.nombre,
-            createdAt: serverTimestamp(),
-          })
-        }
+      // rendimiento, atípico, la alerta automática a reportes_falla y actualizar
+      // unidades.ultima_lectura quedan atómicos dentro de la RPC (ver migración)
+      const { error } = await supabase.rpc('registrar_carga_diesel', {
+        p_unidad_id: f.unidadId, p_estacion: f.estacion || null, p_estacion_id: f.estacionId || null,
+        p_litros: litros, p_costo_litro: costoLitro,
+        p_odometro: odometro, p_viaje_id: viajeId || null,
+        p_caja_id: f.conCaja ? f.cajaId : null,
+        p_horas_termo: f.conCaja ? (Number(f.horasTermo) || 0) : null,
+        p_litros_caja: f.conCaja ? litrosCaja : null,
+        p_notas: f.notas || null, p_operador_id: miOperadorId,
       })
-      // solo se manda ultima_lectura: el trigger de la base rechaza cualquier otro campo cuando lo actualiza un chofer
-      const { error } = await supabase.from('unidades').update({ ultima_lectura: odometro }).eq('id', f.unidadId)
       if (error) throw error
       alert('Carga registrada')
       setF(cargaVacia())
+      setEstacionModo('catalogo')
+      setResetKey((k) => k + 1)
     } catch (e) {
       console.error(e)
       alert('Error al guardar: ' + e.message)
@@ -181,7 +189,7 @@ function CargaDiesel({ usuario }) {
         placeholder="Selecciona tu unidad…"
       />
       {unidad?.ultimaLectura != null && (
-        <p className="muted tc-nota">Última lectura registrada: {unidad.ultimaLectura.toLocaleString()} {unidad.unidadLectura}</p>
+        <p className="muted tc-nota">Última lectura registrada: {unidad.ultimaLectura.toLocaleString()} km</p>
       )}
       {unidad && <BadgeMantenimiento unidad={unidad} />}
       {viajesEnCurso.length > 0 && (
@@ -195,19 +203,36 @@ function CargaDiesel({ usuario }) {
         </label>
       )}
       <label className="campo"><span>Estación de carga</span>
-        <input value={f.estacion} onChange={set('estacion')} placeholder="Ej. Pemex Villa Ahumada" />
+        <select value={estacionModo === 'otra' ? 'otra' : f.estacionId} onChange={(e) => {
+          const v = e.target.value
+          if (v === 'otra') { setEstacionModo('otra'); setF({ ...f, estacionId: '', estacion: '' }); return }
+          setEstacionModo('catalogo')
+          const est = estaciones.find((x) => x.id === v)
+          setF({ ...f, estacionId: v, estacion: est ? estacionTexto(est) : '' })
+        }}>
+          <option value="">Selecciona estación…</option>
+          {estaciones.map((est) => <option key={est.id} value={est.id}>{estacionTexto(est)}</option>)}
+          <option value="otra">Otra (capturar a mano)…</option>
+        </select>
       </label>
-      <div className="fila-3">
+      {estacionModo === 'otra' && (
+        <label className="campo"><span>Nombre de la estación</span>
+          <input value={f.estacion} onChange={set('estacion')} placeholder="Ej. Pemex Villa Ahumada" />
+        </label>
+      )}
+      <div className="fila-2">
         <label className="campo"><span>Litros</span>
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.litros} onChange={set('litros')} />
         </label>
         <label className="campo"><span>$ / litro</span>
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.costoLitro} onChange={set('costoLitro')} />
         </label>
-        <label className="campo"><span>Odómetro ({unidad?.unidadLectura ?? 'km/mi'})</span>
-          <input type="number" inputMode="numeric" min="0" value={f.odometro} onChange={set('odometro')} />
-        </label>
       </div>
+      <CampoOdometro
+        key={resetKey}
+        label="Odómetro" unidadPorDefecto={unidad?.unidadLectura}
+        onChangeKm={(km) => setF((prev) => ({ ...prev, odometro: km ?? '' }))}
+      />
       {costoTotal > 0 && <p className="total-detalle">Costo de la carga: {dinero(costoTotal, 'MXN')}</p>}
 
       <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -276,36 +301,30 @@ function CargaDiesel({ usuario }) {
 
 function ReportarFalla({ usuario }) {
   const unidades = useUnidades()
+  const operadores = useOperadores() ?? []
   const [f, setF] = useState({ unidadId: '', descripcion: '' })
   const [guardando, setGuardando] = useState(false)
-  const [misReportes, setMisReportes] = useState([])
+  const misReportes = useTabla('reportes_falla', mapReporte, // RLS ya limita a los propios del chofer
+    (q) => q.select(SELECT_REPORTE).order('created_at', { ascending: false }).limit(10)) ?? []
 
-  useEffect(() => onSnapshot(
-    query(collection(db, 'reportesFalla'), where('operadorEmail', '==', usuario.email)),
-    (s) => setMisReportes(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (b.createdAt?.seconds ?? 0) - (a.createdAt?.seconds ?? 0))
-        .slice(0, 10),
-    ),
-    console.error,
-  ), [usuario.email])
+  // default: unidad asignada al chofer, igual que en Carga de diésel
+  useEffect(() => {
+    if (usuario.rol !== 'chofer' || f.unidadId) return
+    const base = operadores.find((o) => o.perfilId === usuario.id)
+    if (base?.unidadBaseId) setF((prev) => (prev.unidadId ? prev : { ...prev, unidadId: base.unidadBaseId }))
+  }, [usuario.rol, usuario.id, operadores, f.unidadId])
 
   const guardar = async () => {
     if (!f.unidadId) { alert('Selecciona la unidad'); return }
     if (!f.descripcion.trim()) { alert('Describe la falla'); return }
+    const miOperadorId = operadores.find((o) => o.perfilId === usuario.id)?.id
+    if (!miOperadorId) { alert('Tu cuenta no está vinculada a un operador -- avisa a Catálogos.'); return }
     setGuardando(true)
     try {
-      const u = unidades.find((x) => x.id === f.unidadId)
-      await addDoc(collection(db, 'reportesFalla'), {
-        fecha: hoy(),
-        unidadId: f.unidadId,
-        unidadNumero: u?.numero ?? '',
-        descripcion: f.descripcion.trim(),
-        estatus: 'abierto',
-        operadorEmail: usuario.email,
-        operadorNombre: usuario.nombre,
-        createdAt: serverTimestamp(),
+      const { error } = await supabase.from('reportes_falla').insert({
+        unidad_id: f.unidadId, descripcion: f.descripcion.trim(), operador_id: miOperadorId,
       })
+      if (error) throw error
       alert('Reporte enviado al taller')
       setF({ unidadId: '', descripcion: '' })
     } catch (e) {
@@ -355,19 +374,16 @@ function ReportarFalla({ usuario }) {
 /* ---------- Reportes de falla (taller / admin) ---------- */
 
 function ReportesFalla() {
-  const [reportes, setReportes] = useState(null)
+  const reportes = useTabla('reportes_falla', mapReporte, // taller ve todos, admin ve todos (RLS)
+    (q) => q.select(SELECT_REPORTE).order('created_at', { ascending: false }))
   const [fEstatus, setFEstatus] = useState('abierto')
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'reportesFalla'), orderBy('createdAt', 'desc')),
-    (s) => setReportes(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [])
 
   const atender = async (rp) => {
     if (!confirm(`¿Marcar como atendido el reporte de la unidad ${rp.unidadNumero}?`)) return
     try {
-      await updateDoc(doc(db, 'reportesFalla', rp.id), { estatus: 'atendido', atendidoAt: serverTimestamp() })
+      const { error } = await supabase.from('reportes_falla')
+        .update({ estatus: 'atendido', atendido_at: new Date().toISOString() }).eq('id', rp.id)
+      if (error) throw error
     } catch (e) { alert('Error: ' + e.message) }
   }
 
@@ -410,13 +426,7 @@ function Rendimiento() {
   const [desde, setDesde] = useState(haceUnMes())
   const [hasta, setHasta] = useState(hoy())
   const [fUnidad, setFUnidad] = useState('')
-  const [cargas, setCargas] = useState(null)
-
-  useEffect(() => onSnapshot(
-    query(collection(db, 'cargasDiesel'), orderBy('createdAt', 'desc')),
-    (s) => setCargas(s.docs.map((d) => ({ id: d.id, ...d.data() }))),
-    console.error,
-  ), [])
+  const cargas = useCargas() // admin ve todas (RLS)
 
   const lista = (cargas ?? []).filter((c) =>
     (!desde || c.fecha >= desde) && (!hasta || c.fecha <= hasta) && (!fUnidad || c.unidadId === fUnidad))
@@ -496,7 +506,7 @@ function Rendimiento() {
         <div className="tabla-scroll">
           <table>
             <thead>
-              <tr><th>Unidad</th><th className="num">Promedio</th><th className="num">Mediana (costeo)</th><th>Últimos 5</th><th className="num">Última lectura</th></tr>
+              <tr><th>Unidad</th><th className="num">Promedio</th><th className="num">Mediana (costeo)</th><th>Últimos 5</th><th className="num">Última lectura (km)</th></tr>
             </thead>
             <tbody>
               {trucks.map((u) => {
@@ -504,8 +514,8 @@ function Rendimiento() {
                 return (
                   <tr key={u.id}>
                     <td><strong>{u.numero}</strong></td>
-                    <td className="num">{s ? `${s.promedio} ${u.unidadLectura}/L` : '—'}</td>
-                    <td className="num">{s?.mediana != null ? `${s.mediana} ${u.unidadLectura}/L` : '—'}</td>
+                    <td className="num">{s ? `${s.promedio} km/L` : '—'}</td>
+                    <td className="num">{s?.mediana != null ? `${s.mediana} km/L` : '—'}</td>
                     <td className="muted">{(s?.ultimos ?? []).join(' · ')}</td>
                     <td className="num">{u.ultimaLectura?.toLocaleString() ?? ''}</td>
                   </tr>

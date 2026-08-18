@@ -60,12 +60,6 @@ service cloud.firestore {
       }
     }
 
-    // totales consolidados por mes (dashboard de conciliación)
-    match /balances/{mes} {
-      allow read: if activo() && rol() == 'admin';
-      allow write: if activo() && rol() in ['compras', 'admin'];
-    }
-
     match /config/{id} {
       allow read: if activo();
       allow write: if activo() && rol() == 'admin';

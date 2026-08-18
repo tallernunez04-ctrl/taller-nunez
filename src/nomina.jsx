@@ -1,11 +1,6 @@
-import { useEffect, useState } from 'react'
-import {
-  addDoc, collection, doc, getDocs, onSnapshot, query, runTransaction,
-  serverTimestamp, updateDoc, where,
-} from 'firebase/firestore'
-import { db, subirArchivo } from './firebase'
-import { supabase } from './lib/supabaseClient'
-import { incBalance, mapWO, SELECT_WO, useColeccion } from './compras'
+import { useState } from 'react'
+import { subirArchivo, supabase } from './lib/supabaseClient'
+import { mapWO, SELECT_WO, useTabla } from './compras'
 import { useOperadores } from './catalogos'
 import { mapViaje, SELECT_VIAJE } from './viajes'
 import { dinero, r2, hoy } from './utils/format'
@@ -16,10 +11,47 @@ import { exportarXlsx } from './utils/exportarXlsx'
      menos viáticos no comprobados.
    - Mecánicos: sueldo base + bono por WO completada en el periodo.
    - Administrativos: sueldo base.
-   El cierre corre en una transacción que marca cada viaje con nominaId:
-   un viaje nunca puede liquidarse dos veces. */
+   Migrado a Supabase: el cierre corre en la RPC crear_corte_nomina, que marca cada viaje con
+   nomina_id de forma atómica -- un viaje nunca puede liquidarse dos veces. */
 
 export const ESTADO_NOMINA = { calculada: 'Calculada', aprobada: 'Aprobada', pagada: 'Pagada' }
+
+const mapEmpleado = (e) => ({
+  id: e.id, nombre: e.nombre, tipo: e.tipo, email: e.email ?? '',
+  sueldoSemanal: Number(e.sueldo_semanal) || 0, bonoPorWO: Number(e.bono_por_wo) || 0,
+  activo: e.activo,
+})
+const useEmpleados = () => useTabla('empleados', mapEmpleado, (q) => q.select('*'))
+
+const mapNomina = (n) => ({
+  id: n.id,
+  periodo: { del: n.periodo_del, al: n.periodo_al, tipo: n.periodo_tipo },
+  estatus: n.estatus,
+  numEmpleados: n.num_empleados,
+  totalGeneral: Number(n.total_general) || 0,
+  createdAt: n.created_at,
+  pagadaAt: n.pagada_at,
+})
+
+const SELECT_DETALLE = '*, nomina_detalle_viajes(*)'
+const mapDetalle = (d) => ({
+  id: d.id,
+  empleadoTipo: d.tipo,
+  empleadoId: d.operador_id ?? d.empleado_id,
+  nombre: d.nombre_snapshot,
+  viajes: (d.nomina_detalle_viajes ?? []).map((v) => ({
+    id: v.viaje_id, folio: v.folio_snapshot, pago: Number(v.pago) || 0,
+    viaticosEntregados: Number(v.viaticos_entregados) || 0,
+    viaticosComprobados: Number(v.viaticos_comprobados) || 0,
+  })),
+  numWOs: d.num_wos,
+  sueldoBase: Number(d.sueldo_base) || 0,
+  bonos: Number(d.bonos) || 0,
+  percepciones: Number(d.percepciones) || 0,
+  descuentoViaticos: Number(d.descuento_viaticos) || 0,
+  total: Number(d.total) || 0,
+  comprobanteURL: d.comprobante_path ?? '',
+})
 
 const hace7 = () => {
   const d = new Date()
@@ -45,7 +77,7 @@ export default function Nomina() {
 const empleadoVacio = () => ({ nombre: '', tipo: 'mecanico', email: '', sueldoSemanal: '', bonoPorWO: '', activo: true })
 
 function Empleados() {
-  const empleados = useColeccion('empleados')
+  const empleados = useEmpleados()
   const [f, setF] = useState(null)
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
@@ -56,15 +88,14 @@ function Empleados() {
       const limpio = {
         nombre: datos.nombre.trim(), tipo: datos.tipo,
         email: (datos.email || '').trim().toLowerCase(),
-        sueldoSemanal: Number(datos.sueldoSemanal) || 0,
-        bonoPorWO: Number(datos.bonoPorWO) || 0,
+        sueldo_semanal: Number(datos.sueldoSemanal) || 0,
+        bono_por_wo: Number(datos.bonoPorWO) || 0,
         activo: datos.activo,
       }
-      if (id) {
-        await updateDoc(doc(db, 'empleados', id), limpio)
-      } else {
-        await addDoc(collection(db, 'empleados'), { ...limpio, createdAt: serverTimestamp() })
-      }
+      const { error } = id
+        ? await supabase.from('empleados').update(limpio).eq('id', id)
+        : await supabase.from('empleados').insert(limpio)
+      if (error) throw error
       setF(null)
     } catch (e) { alert('Error: ' + e.message) }
   }
@@ -139,15 +170,9 @@ function Empleados() {
 /* ---------- Cortes de nómina ---------- */
 
 function Cortes() {
-  const [nominas, setNominas] = useState(null)
+  const nominas = useTabla('nominas', mapNomina, (q) => q.select('*').order('periodo_del', { ascending: false }))
   const [nueva, setNueva] = useState(false)
   const [detalle, setDetalle] = useState(null)
-
-  useEffect(() => onSnapshot(collection(db, 'nominas'),
-    (s) => setNominas(
-      s.docs.map((d) => ({ id: d.id, ...d.data() }))
-        .sort((a, b) => (b.periodo?.del || '').localeCompare(a.periodo?.del || '')),
-    ), console.error), [])
 
   if (nueva) return <NuevoCorte onDone={() => setNueva(false)} />
   if (detalle) {
@@ -180,7 +205,7 @@ function Cortes() {
 
 function NuevoCorte({ onDone }) {
   const operadores = useOperadores() ?? []
-  const empleados = useColeccion('empleados') ?? []
+  const empleados = useEmpleados() ?? []
   const [tipo, setTipo] = useState('semanal')
   const [del, setDel] = useState(hace7())
   const [al, setAl] = useState(hoy())
@@ -253,35 +278,28 @@ function NuevoCorte({ onDone }) {
     if (!confirm('¿Guardar el corte de nómina? Los viajes incluidos quedarán conciliados y no podrán pagarse en otro corte.')) return
     setGuardando(true)
     try {
-      const viajeIds = preview.flatMap((d) => d.viajes.map((v) => v.id))
-      // nominas/detalles siguen en Firestore (módulo aparte); viajes ya vive en Supabase --
-      // no hay transacción cruzada entre las dos bases, se re-verifica antes en vez de dentro.
-      // ojo: nomina_id de viajes no se toca (tiene FK a nominas de Supabase, que sigue vacía
-      // hasta que Nómina migre) -- "conciliado" ya excluye el viaje de futuros cortes.
-      if (viajeIds.length) {
-        const { data: yaConciliados, error: errCheck } = await supabase.from('viajes')
-          .select('folio').in('id', viajeIds).neq('estatus', 'terminado')
-        if (errCheck) throw errCheck
-        if (yaConciliados.length) throw new Error(`El viaje ${yaConciliados[0].folio} ya está en otra nómina`)
-      }
-      const nominaRef = doc(collection(db, 'nominas'))
-      await runTransaction(db, async (tx) => {
-        tx.set(nominaRef, {
-          periodo: { del, al, tipo },
-          estatus: 'calculada',
-          numEmpleados: preview.length,
-          totalGeneral: r2(preview.reduce((s, d) => s + d.total, 0)),
-          createdAt: serverTimestamp(),
-        })
-        for (const d of preview) {
-          tx.set(doc(collection(db, 'nominas', nominaRef.id, 'detalles')), d)
-        }
+      // atómico en la RPC: valida que ningún viaje se haya conciliado ya en otro corte,
+      // crea nómina+detalles+detalle_viajes y marca los viajes -- todo o nada
+      const detallesJson = preview.map((d) => ({
+        tipo: d.empleadoTipo,
+        operador_id: d.empleadoTipo === 'chofer' ? d.empleadoId : null,
+        empleado_id: d.empleadoTipo !== 'chofer' ? d.empleadoId : null,
+        nombre_snapshot: d.nombre,
+        num_wos: d.numWOs,
+        sueldo_base: d.sueldoBase,
+        bonos: d.bonos,
+        percepciones: d.percepciones,
+        descuento_viaticos: d.descuentoViaticos,
+        total: d.total,
+        viajes: d.viajes.map((v) => ({
+          viaje_id: v.id, folio_snapshot: v.folio,
+          pago: v.pago, viaticos_entregados: v.viaticosEntregados, viaticos_comprobados: v.viaticosComprobados,
+        })),
+      }))
+      const { error } = await supabase.rpc('crear_corte_nomina', {
+        p_periodo_del: del, p_periodo_al: al, p_periodo_tipo: tipo, p_detalles: detallesJson,
       })
-      if (viajeIds.length) {
-        const { error: errConciliar } = await supabase.from('viajes')
-          .update({ estatus: 'conciliado' }).in('id', viajeIds).eq('estatus', 'terminado')
-        if (errConciliar) throw errConciliar
-      }
+      if (error) throw error
       onDone()
     } catch (e) {
       console.error(e)
@@ -360,27 +378,20 @@ function NuevoCorte({ onDone }) {
 }
 
 function CorteDetalle({ nomina, onVolver }) {
-  const [detalles, setDetalles] = useState(null)
+  const detalles = useTabla('nomina_detalles', mapDetalle,
+    (q) => q.select(SELECT_DETALLE).eq('nomina_id', nomina.id).order('nombre_snapshot'))
   const [guardando, setGuardando] = useState(false)
-
-  useEffect(() => onSnapshot(collection(db, 'nominas', nomina.id, 'detalles'),
-    (s) => setDetalles(
-      s.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.nombre.localeCompare(b.nombre)),
-    ), console.error), [nomina.id])
 
   const avanzar = async () => {
     const sig = nomina.estatus === 'calculada' ? 'aprobada' : 'pagada'
     if (!confirm(`¿Marcar la nómina como ${ESTADO_NOMINA[sig].toLowerCase()}?`)) return
     setGuardando(true)
     try {
-      await updateDoc(doc(db, 'nominas', nomina.id), {
+      const { error } = await supabase.from('nominas').update({
         estatus: sig,
-        ...(sig === 'pagada' ? { pagadaAt: hoy() } : {}),
-      })
-      // el costo entra al balance del mes del fin de periodo, al pagarse
-      if (sig === 'pagada') {
-        await incBalance(nomina.periodo.al.slice(0, 7), { costoNomina: nomina.totalGeneral })
-      }
+        ...(sig === 'pagada' ? { pagada_at: hoy() } : {}),
+      }).eq('id', nomina.id)
+      if (error) throw error
     } catch (e) {
       alert('Error: ' + e.message)
     } finally {
@@ -392,7 +403,8 @@ function CorteDetalle({ nomina, onVolver }) {
     if (!archivo) return
     try {
       const url = await subirArchivo(`nominas/${nomina.id}/${det.id}_${archivo.name}`, archivo)
-      await updateDoc(doc(db, 'nominas', nomina.id, 'detalles', det.id), { comprobanteURL: url })
+      const { error } = await supabase.from('nomina_detalles').update({ comprobante_path: url }).eq('id', det.id)
+      if (error) throw error
     } catch (e) { alert('Error: ' + e.message) }
   }
 

@@ -9,6 +9,7 @@ import Diesel from './diesel'
 import Viajes from './viajes'
 const Nomina = lazy(() => import('./nomina'))
 const Conciliacion = lazy(() => import('./conciliacion'))
+const Llantas = lazy(() => import('./llantas'))
 // carga diferida: xlsx solo pesa para el admin
 const Admin = lazy(() => import('./admin'))
 
@@ -37,12 +38,14 @@ const NAV = {
     { id: 'viajes', label: 'Viajes', icono: '🚚', mod: 'viajes' },
     { id: 'cobranza', label: 'Por cobrar', icono: '💰', mod: 'viajes' },
     { id: 'unidades', label: 'Unidades', icono: '🚛', mod: 'compras' },
+    { id: 'gasolineras', label: 'Gasolineras', icono: '⛽', mod: 'catalogos' },
   ],
   admin: [
     { id: 'gastos', label: 'Gastos', icono: '💵', mod: 'admin' },
     { id: 'dashboard', label: 'Dashboard', icono: '📊', mod: 'admin' },
     { id: 'detalle-unidad', label: 'Detalle por Unidad', icono: '🔍', mod: 'admin' },
     { id: 'rendimiento', label: 'Diésel', icono: '⛽', mod: 'diesel' },
+    { id: 'llantas', label: 'Llantas', icono: '🛞', mod: 'llantas' },
     { id: 'operadores', label: 'Operadores', icono: '🧑‍✈️', mod: 'catalogos' },
     { id: 'clientes', label: 'Clientes', icono: '🤝', mod: 'catalogos' },
     { id: 'tabulador', label: 'Tabulador', icono: '🗺️', mod: 'catalogos' },
@@ -220,6 +223,10 @@ export default function App() {
   ) : actual.mod === 'conciliacion' ? (
     <Suspense fallback={<p className="muted">Cargando…</p>}>
       <Conciliacion />
+    </Suspense>
+  ) : actual.mod === 'llantas' ? (
+    <Suspense fallback={<p className="muted">Cargando…</p>}>
+      <Llantas />
     </Suspense>
   ) : (
     <Suspense fallback={<p className="muted">Cargando…</p>}>

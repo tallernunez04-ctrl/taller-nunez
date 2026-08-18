@@ -32,6 +32,7 @@ export default function Catalogos({ vista }) {
   if (vista === 'clientes') return <Clientes />
   if (vista === 'proveedores') return <Proveedores />
   if (vista === 'tabulador') return <Tabulador />
+  if (vista === 'gasolineras') return <Gasolineras />
   return <Operadores />
 }
 
@@ -73,11 +74,21 @@ const mapProveedor = (p) => ({
 })
 const mapTramo = (t) => ({ id: t.id, origen: t.origen, destino: t.destino, pagoChofer: t.pago_chofer, km: t.km ?? 0 })
 const mapContacto = (c) => ({ id: c.id, nombre: c.nombre, relacion: c.relacion ?? '', telefono: c.telefono ?? '' })
+const mapGasolinera = (g) => ({ id: g.id, razonSocial: g.razon_social, activo: g.activo })
+const mapEstacion = (e) => ({ id: e.id, gasolineraId: e.gasolinera_id, alias: e.alias, ciudad: e.ciudad ?? '', activo: e.activo })
 
 export const useOperadores = () => useTabla('operadores', mapOperador)
 export const useClientes = () => useTabla('clientes', mapCliente)
 export const useProveedores = () => useTabla('proveedores', mapProveedor)
 export const useTabuladores = () => useTabla('tabuladores', mapTramo, (q) => q.select('*').eq('vigente', true))
+export const useGasolineras = () => useTabla('gasolineras', mapGasolinera, (q) => q.select('*').eq('activo', true))
+// estaciones + razón social de su gasolinera en un solo hook -- es lo que consume el selector de Diésel
+export const useEstacionesGasolinera = () => useTabla(
+  'gasolinera_estaciones',
+  (e) => ({ ...mapEstacion(e), razonSocial: e.gasolineras?.razon_social ?? '' }),
+  (q) => q.select('*, gasolineras(razon_social)').eq('activo', true),
+)
+export const estacionTexto = (e) => [e.razonSocial, e.alias, e.ciudad].filter(Boolean).join(' · ')
 
 // direcciones y contactos se cargan bajo demanda (solo al editar un cliente/operador puntual),
 // no con canal realtime -- es un formulario que un solo admin edita a la vez.
@@ -85,6 +96,8 @@ export const cargarDirecciones = (clienteId) => supabase.from('cliente_direccion
   .then(({ data, error }) => { if (error) throw error; return data.map(mapDireccion) })
 const cargarContactos = (operadorId) => supabase.from('operador_contactos_emergencia').select('*').eq('operador_id', operadorId)
   .then(({ data, error }) => { if (error) throw error; return data.map(mapContacto) })
+const cargarEstaciones = (gasolineraId) => supabase.from('gasolinera_estaciones').select('*').eq('gasolinera_id', gasolineraId)
+  .then(({ data, error }) => { if (error) throw error; return data.map(mapEstacion) })
 
 /* ---------- Operadores (choferes) ---------- */
 
@@ -682,6 +695,146 @@ function Tabulador() {
         </div>
       )}
       {!f && <button className="fab" onClick={() => setF({ origen: '', destino: '', pagoChofer: '', km: '' })} aria-label="Agregar tramo">+</button>}
+    </div>
+  )
+}
+
+/* ---------- Gasolineras (+ estaciones) ---------- */
+
+const gasolineraVacia = () => ({ razonSocial: '' })
+const estacionVacia = () => ({ alias: '', ciudad: '' })
+
+function Gasolineras() {
+  const gasolineras = useGasolineras()
+  const [editando, setEditando] = useState(null)
+
+  if (editando) {
+    return <GasolineraForm gasolinera={editando === 'nuevo' ? null : editando} onDone={() => setEditando(null)} />
+  }
+
+  const lista = (gasolineras ?? []).slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
+  return (
+    <div>
+      <h2>Gasolineras</h2>
+      <p className="muted">Empresas con convenio y sus estaciones de servicio. El chofer elige de aquí al cargar diésel.</p>
+      {gasolineras === null && <p className="muted">Cargando…</p>}
+      {gasolineras !== null && lista.length === 0 && (
+        <p className="muted vacio">Sin gasolineras registradas.<br />Toca + para agregar la primera.</p>
+      )}
+      {lista.map((g) => (
+        <button key={g.id} className="tarjeta" onClick={() => setEditando(g)}>
+          <strong>{g.razonSocial}</strong>
+        </button>
+      ))}
+      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar gasolinera">+</button>
+    </div>
+  )
+}
+
+function GasolineraForm({ gasolinera, onDone }) {
+  const [f, setF] = useState(gasolinera ?? gasolineraVacia())
+  const [guardando, setGuardando] = useState(false)
+  const [estaciones, setEstaciones] = useState([])
+  const [estForm, setEstForm] = useState(null) // {id?} en edición | null
+  const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
+
+  useEffect(() => {
+    if (!gasolinera) return
+    cargarEstaciones(gasolinera.id).then(setEstaciones).catch(console.error)
+  }, [gasolinera])
+
+  const guardar = async () => {
+    if (!f.razonSocial.trim()) { alert('Escribe la razón social'); return }
+    setGuardando(true)
+    try {
+      const datos = { razon_social: f.razonSocial.trim() }
+      const { error } = gasolinera
+        ? await supabase.from('gasolineras').update(datos).eq('id', gasolinera.id)
+        : await supabase.from('gasolineras').insert(datos)
+      if (error) throw error
+      onDone()
+    } catch (e) {
+      console.error(e)
+      alert('Error al guardar: ' + e.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  const guardarEstacion = async () => {
+    if (!estForm.alias.trim()) { alert('Escribe el alias de la estación'); return }
+    try {
+      const { id, ...e } = estForm
+      const fila = { gasolinera_id: gasolinera.id, alias: e.alias.trim(), ciudad: e.ciudad || null }
+      const { error } = id
+        ? await supabase.from('gasolinera_estaciones').update(fila).eq('id', id)
+        : await supabase.from('gasolinera_estaciones').insert(fila)
+      if (error) throw error
+      setEstForm(null)
+      setEstaciones(await cargarEstaciones(gasolinera.id))
+    } catch (e) { alert('Error: ' + e.message) }
+  }
+
+  const borrarEstacion = async (id) => {
+    if (!confirm('¿Eliminar esta estación?')) return
+    try {
+      const { error } = await supabase.from('gasolinera_estaciones').delete().eq('id', id)
+      if (error) throw error
+      setEstaciones((prev) => prev.filter((e) => e.id !== id))
+    } catch (e) { alert('Error: ' + e.message) }
+  }
+
+  return (
+    <div>
+      <h2>{gasolinera ? gasolinera.razonSocial : 'Nueva gasolinera'}</h2>
+      <label className="campo"><span>Razón social</span>
+        <input value={f.razonSocial} onChange={set('razonSocial')} />
+      </label>
+
+      {gasolinera && (
+        <>
+          <h3>Estaciones de servicio</h3>
+          {estaciones.map((e) => (
+            <div key={e.id} className="tarjeta detalle">
+              <div className="tarjeta-top">
+                <span>{[e.alias, e.ciudad].filter(Boolean).join(' · ')}</span>
+                <span>
+                  <button type="button" className="btn-borrar" aria-label="Editar" onClick={() => setEstForm(e)}>✏️</button>
+                  <button type="button" className="btn-borrar" aria-label="Eliminar" onClick={() => borrarEstacion(e.id)}>🗑</button>
+                </span>
+              </div>
+            </div>
+          ))}
+          {estForm ? (
+            <div className="linea">
+              <div className="fila-2">
+                <label className="campo"><span>Alias</span>
+                  <input value={estForm.alias} onChange={(e) => setEstForm({ ...estForm, alias: e.target.value })} placeholder="Ej. La de la curva" />
+                </label>
+                <label className="campo"><span>Ciudad</span>
+                  <input value={estForm.ciudad} onChange={(e) => setEstForm({ ...estForm, ciudad: e.target.value })} />
+                </label>
+              </div>
+              <div className="acciones">
+                <button className="btn-primario" onClick={guardarEstacion}>Guardar estación</button>
+                <button className="btn-secundario" onClick={() => setEstForm(null)}>Cancelar</button>
+              </div>
+            </div>
+          ) : (
+            <button type="button" className="btn-secundario btn-bloque" onClick={() => setEstForm(estacionVacia())}>
+              + Agregar estación
+            </button>
+          )}
+        </>
+      )}
+      {!gasolinera && <p className="muted">Guarda la gasolinera para poder agregar estaciones.</p>}
+
+      <div className="acciones">
+        <button className="btn-primario" disabled={guardando} onClick={guardar}>
+          {guardando ? 'Guardando…' : 'Guardar gasolinera'}
+        </button>
+        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
+      </div>
     </div>
   )
 }

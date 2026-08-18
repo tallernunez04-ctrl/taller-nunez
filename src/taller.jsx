@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
-import { mapWO, SELECT_WO, useTabla } from './compras'
+import { mapWO, SELECT_WO, useTabla, aKm, CampoOdometro } from './compras'
 import { hoy } from './utils/format'
 
 export const FALLAS = [
@@ -14,6 +14,7 @@ export const FALLAS = [
 export const FALLA_LABEL = Object.fromEntries(FALLAS)
 export const TIPOS = { truck: 'Trucks', reefer: 'Reefers', plataforma: 'Plataformas', caja_seca: 'Cajas Secas' }
 export const LECTURA_LABEL = { mi: 'Millaje (mi)', km: 'Kilometraje (km)', hrs: 'Horómetro (hrs)' }
+export const ACCIONES_LLANTA = [['reemplazo', 'Reemplazo'], ['rotacion', 'Rotación'], ['reparacion', 'Reparación']]
 
 // piezasRequeridas era string en docs viejos; normaliza siempre a array
 export const piezasLista = (p) => (Array.isArray(p) ? p : p ? [p] : [])
@@ -71,6 +72,7 @@ function WOForm({ usuario, wo, onDone }) {
       mecanico: usuario.nombre,
       tipoFalla: [],
       diagnostico: '', piezasRequeridas: [''], notasMecanico: '',
+      llantaAccion: '', llantaPosiciones: [''], llantaNotas: '',
     })
   const [guardando, setGuardando] = useState(false)
   const original = useMemo(() => JSON.stringify(f), [])
@@ -106,6 +108,21 @@ function WOForm({ usuario, wo, onDone }) {
 
   const guardar = async (completar) => {
     if (!f.unidadId) { alert('Selecciona una unidad'); return }
+    const llantasActivas = f.tipoFalla.includes('llantas')
+    const posicionesLimpias = f.llantaPosiciones.map((p) => p.trim()).filter(Boolean)
+    let kmEvento = null
+    if (llantasActivas) {
+      if (!f.llantaAccion) { alert('Elige la acción de llantas: Reemplazo, Rotación o Reparación'); return }
+      // rotación es un evento de unidad completa (mueve varias llantas) -- reemplazo/reparación
+      // necesitan la posición específica para el KPI Km/llanta
+      if (f.llantaAccion !== 'rotacion' && posicionesLimpias.length === 0) {
+        alert('Escribe al menos una posición (ej. "Del Izq") para el reemplazo/reparación'); return
+      }
+      kmEvento = aKm(f.lectura.valor, f.lectura.unidad)
+      if (kmEvento == null) {
+        alert('Para el análisis de llantas hace falta el millaje/kilometraje de la WO'); return
+      }
+    }
     if (completar && !confirm('¿Confirmar que la reparación está completa? Esta acción no se puede deshacer.')) return
     setGuardando(true)
     try {
@@ -113,7 +130,8 @@ function WOForm({ usuario, wo, onDone }) {
         fecha: f.fecha,
         unidad_id: f.unidadId,
         lectura_valor: Number(f.lectura.valor) || null,
-        lectura_unidad: f.lectura.unidad || null,
+        // el valor ya viene homologado a Km (CampoOdometro) salvo horómetro, que no es distancia
+        lectura_unidad: f.lectura.unidad === 'hrs' ? 'hrs' : (f.lectura.unidad ? 'km' : null),
         chofer_texto: f.chofer || null,
         mecanico_texto: f.mecanico || null,
         tipo_falla: f.tipoFalla,
@@ -124,10 +142,23 @@ function WOForm({ usuario, wo, onDone }) {
         ...(completar ? { completado_at: new Date().toISOString() } : {}),
       }
       // el folio WO-XXXX lo asigna la secuencia de Postgres al insertar, no hace falta contador propio
-      const { error } = wo
-        ? await supabase.from('work_orders').update(datos).eq('id', wo.id)
-        : await supabase.from('work_orders').insert({ ...datos, creado_por: usuario.id })
+      const { data: guardada, error } = wo
+        ? await supabase.from('work_orders').update(datos).eq('id', wo.id).select('id').single()
+        : await supabase.from('work_orders').insert({ ...datos, creado_por: usuario.id }).select('id').single()
       if (error) throw error
+
+      if (llantasActivas) {
+        const { error: errLlanta } = await supabase.from('wo_llantas').upsert({
+          work_order_id: guardada.id, unidad_id: f.unidadId, accion: f.llantaAccion,
+          posiciones: posicionesLimpias, km_evento: kmEvento, notas: f.llantaNotas || null,
+        }, { onConflict: 'work_order_id' })
+        if (errLlanta) throw errLlanta
+      } else if (wo) {
+        // se destildó "Llantas" en una WO que ya tenía un evento capturado -- se borra, no
+        // queda dato huérfano contaminando el KPI
+        const { error: errDel } = await supabase.from('wo_llantas').delete().eq('work_order_id', wo.id)
+        if (errDel) throw errDel
+      }
       onDone()
     } catch (e) {
       console.error(e)
@@ -166,15 +197,29 @@ function WOForm({ usuario, wo, onDone }) {
           })}
         </select>
       </label>
-      {f.lectura.unidad && (
+      {f.lectura.unidad === 'hrs' && (
         <label className="campo">
-          <span>{LECTURA_LABEL[f.lectura.unidad]}</span>
+          <span>{LECTURA_LABEL.hrs}</span>
           <input
             type="number" inputMode="numeric" min="0"
             value={f.lectura.valor}
             onChange={(e) => setF({ ...f, lectura: { ...f.lectura, valor: e.target.value } })}
           />
         </label>
+      )}
+      {(f.lectura.unidad === 'mi' || f.lectura.unidad === 'km') && (
+        <CampoOdometro
+          key={f.unidadId}
+          label="Millaje / Kilometraje"
+          unidadPorDefecto={f.lectura.unidad}
+          valorInicialKm={wo ? aKm(f.lectura.valor, f.lectura.unidad) : null}
+          // solo cambia el valor, nunca f.lectura.unidad: si tocara "unidad" aquí, el próximo
+          // render se lo pasaría de vuelta a CampoOdometro como unidadPorDefecto="km" y su
+          // propio efecto de default (todavía sin "tocado" porque el usuario no usó el <select>
+          // de Unidad) lo pisaría de una tecleada a la otra -- el selector "se autocambiaba"
+          // a Kilómetros a media escritura y arruinaba la conversión
+          onChangeKm={(km) => setF({ ...f, lectura: { ...f.lectura, valor: km ?? '' } })}
+        />
       )}
       <label className="campo">
         <span>Chofer</span>
@@ -198,6 +243,56 @@ function WOForm({ usuario, wo, onDone }) {
           ))}
         </div>
       </div>
+      {f.tipoFalla.includes('llantas') && (
+        <div className="tarjeta detalle">
+          <strong>Llantas</strong>
+          <div className="campo">
+            <span>Acción</span>
+            <div className="chips">
+              {ACCIONES_LLANTA.map(([id, label]) => (
+                <button
+                  type="button" key={id}
+                  className={f.llantaAccion === id ? 'chip chip-toggle activo' : 'chip chip-toggle'}
+                  onClick={() => setF({ ...f, llantaAccion: id })}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="campo">
+            <span>Posiciones{f.llantaAccion === 'rotacion' ? ' (opcional)' : ''}</span>
+            {f.llantaPosiciones.map((p, i) => (
+              <div key={i} className="pieza">
+                <span className="pieza-num">{i + 1}.</span>
+                <input
+                  value={p}
+                  placeholder="Ej. Del Izq, Tras Der Ext…"
+                  onChange={(e) => setF({
+                    ...f,
+                    llantaPosiciones: f.llantaPosiciones.map((x, j) => (j === i ? e.target.value : x)),
+                  })}
+                />
+                <button
+                  type="button" className="btn-borrar" aria-label="Eliminar posición"
+                  disabled={f.llantaPosiciones.length === 1}
+                  onClick={() => setF({ ...f, llantaPosiciones: f.llantaPosiciones.filter((_, j) => j !== i) })}
+                >🗑</button>
+              </div>
+            ))}
+            <button
+              type="button" className="btn-secundario btn-bloque"
+              onClick={() => setF({ ...f, llantaPosiciones: [...f.llantaPosiciones, ''] })}
+            >+ Agregar posición</button>
+          </div>
+          <label className="campo"><span>Notas de llantas (opcional)</span>
+            <textarea value={f.llantaNotas} onChange={set('llantaNotas')} />
+          </label>
+          {!f.lectura.unidad && (
+            <p className="error">Selecciona la unidad para poder capturar el millaje/kilometraje de este evento.</p>
+          )}
+        </div>
+      )}
       <label className="campo">
         <span>Diagnóstico</span>
         <textarea value={f.diagnostico} onChange={set('diagnostico')} />

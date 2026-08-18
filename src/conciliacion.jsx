@@ -1,14 +1,14 @@
 import { useEffect, useState } from 'react'
-import { collection, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore'
-import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
 import { aUSD, mapCompra, SELECT_COMPRA, useTabla, useTipoCambio, useUnidades } from './compras'
 import { mapViaje, SELECT_VIAJE, useViajes } from './viajes'
+import { cargasEnRango } from './diesel'
 import { dinero, r2, hoy } from './utils/format'
 
-/* Conciliación gerencial. Los KPIs del mes salen de /balances/{YYYY-MM}
-   (1 lectura); los cruces (auditoría de litros, rentabilidad) usan queries
-   acotadas por rango de fecha — nunca el historial completo. */
+/* Conciliación gerencial. Los KPIs del mes salen de la vista v_balance_mensual
+   (1 lectura, calculada en vivo desde viajes/compras/nominas -- reemplaza el
+   agregado manual que vivía en Firestore); los cruces (auditoría de litros,
+   rentabilidad) usan queries acotadas por rango de fecha — nunca el historial completo. */
 
 const mesActual = () => hoy().slice(0, 7)
 const finDeMes = (mes) => mes + '-31' // válido para comparar strings YYYY-MM-DD
@@ -19,20 +19,27 @@ const sumaDias = (dias) => {
   return d.toLocaleDateString('sv')
 }
 
+const mapBalance = (b) => ({
+  ingresosViajes: Number(b.ingresos_viajes) || 0,
+  costoCompras: Number(b.costo_compras) || 0,
+  costoDieselFacturado: Number(b.costo_diesel_facturado) || 0,
+  litrosFacturados: Number(b.litros_facturados) || 0,
+  costoNomina: Number(b.costo_nomina) || 0,
+})
+
 export default function Conciliacion() {
   const [mes, setMes] = useState(mesActual())
   const [balance, setBalance] = useState(null)
   const [cargasMes, setCargasMes] = useState([])
 
-  useEffect(() => onSnapshot(doc(db, 'balances', mes),
-    (s) => setBalance(s.data() ?? {}), console.error), [mes])
-
-  // litros reportados por choferes en el mes (query por rango, sin índice compuesto)
   useEffect(() => {
-    getDocs(query(collection(db, 'cargasDiesel'),
-      where('fecha', '>=', mes + '-01'), where('fecha', '<=', finDeMes(mes))))
-      .then((s) => setCargasMes(s.docs.map((d) => d.data())))
-      .catch(console.error)
+    supabase.from('v_balance_mensual').select('*').eq('mes', mes + '-01').maybeSingle()
+      .then(({ data, error }) => { if (error) { console.error(error); return } setBalance(data ? mapBalance(data) : {}) })
+  }, [mes])
+
+  // litros reportados por choferes en el mes
+  useEffect(() => {
+    cargasEnRango(mes + '-01', finDeMes(mes)).then(setCargasMes).catch(console.error)
   }, [mes])
 
   const litrosReportados = r2(cargasMes.reduce((s, c) => s + (c.litros || 0) + (c.caja?.litros || 0), 0))
@@ -154,14 +161,14 @@ function Rentabilidad({ mes }) {
     Promise.all([
       supabase.from('viajes').select(SELECT_VIAJE).gte('fecha', desde).lte('fecha', hasta),
       supabase.from('compras').select(SELECT_COMPRA).gte('fecha', desde).lte('fecha', hasta),
-      getDocs(query(collection(db, 'cargasDiesel'), where('fecha', '>=', desde), where('fecha', '<=', hasta))),
+      cargasEnRango(desde, hasta),
     ])
       .then(([v, c, d]) => {
         if (v.error) throw v.error
         setViajes(v.data.map((x) => mapViaje(x)))
         if (c.error) throw c.error
         setCompras(c.data.map(mapCompra))
-        setCargas(d.docs.map((x) => x.data()))
+        setCargas(d)
       })
       .catch(console.error)
   }, [mes])

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
-import { collection, doc, increment, onSnapshot, setDoc } from 'firebase/firestore'
-import { db, subirArchivo } from './firebase'
-import { supabase } from './lib/supabaseClient'
+import { useEffect, useId, useMemo, useState } from 'react'
+import { collection, doc, onSnapshot } from 'firebase/firestore'
+import { db } from './firebase'
+import { subirArchivo, supabase } from './lib/supabaseClient'
 import { useProveedores } from './catalogos'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
 import { r2, dinero, hoy } from './utils/format'
@@ -16,15 +16,6 @@ export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
 
 // tc = pesos por 1 USD (config/general.tipoCambioUSD). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))
-
-// acumula totales del mes en /balances/{YYYY-MM} — el dashboard de conciliación
-// lee este doc consolidado en vez de recorrer miles de documentos
-// ponytail: agregación desde el cliente; migrar a Cloud Function si crece la concurrencia
-export const incBalance = (mes, campos) => setDoc(
-  doc(db, 'balances', mes),
-  Object.fromEntries(Object.entries(campos).map(([k, v]) => [k, increment(r2(v))])),
-  { merge: true },
-)
 
 // km/mi que faltan para el próximo mantenimiento (null = sin ciclo configurado)
 export const paraMantenimiento = (u) => {
@@ -115,7 +106,7 @@ export function useTabla(tabla, mapear, construir) {
 }
 
 // selects con los embeds de FK que necesita la UI (evita denormalizar unidadNumero/proveedor/etc.)
-export const SELECT_WO = '*, unidades(numero), perfiles(email)'
+export const SELECT_WO = '*, unidades(numero), perfiles(email), wo_llantas(accion, posiciones, notas)'
 export const SELECT_COMPRA = '*, compra_conceptos(*), unidades(numero), proveedores(razon_social), work_orders(folio), perfiles(email)'
 
 export const mapWO = (w) => ({
@@ -135,6 +126,9 @@ export const mapWO = (w) => ({
   creadoPor: w.perfiles?.email ?? '',
   createdAt: w.created_at,
   completadoAt: w.completado_at,
+  llantaAccion: w.wo_llantas?.[0]?.accion ?? '',
+  llantaPosiciones: w.wo_llantas?.[0]?.posiciones?.length ? w.wo_llantas[0].posiciones : [''],
+  llantaNotas: w.wo_llantas?.[0]?.notas ?? '',
 })
 
 export const mapCompra = (c) => ({
@@ -176,30 +170,91 @@ export const mapCompra = (c) => ({
   }],
 })
 
+// input con <datalist> nativo: escribir muestra sugerencias reales del navegador (antes era
+// un buscador de adorno que filtraba un <select> oculto y no mostraba nada al escribir).
 export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
-  const [busqueda, setBusqueda] = useState('')
-  const filtradas = busqueda
-    ? unidades.filter((u) => u.numero.toUpperCase().includes(busqueda.toUpperCase()))
-    : unidades
+  const listId = useId()
+  const seleccionada = unidades.find((u) => u.id === value)
+  const [texto, setTexto] = useState(seleccionada?.numero ?? '')
+
+  // también depende de seleccionada?.numero: si value ya viene seteado (ej. default del
+  // chofer) antes de que `unidades` termine de cargar, seleccionada pasa de undefined a
+  // encontrada sin que `value` vuelva a cambiar -- sin esto el texto se quedaba vacío para siempre
+  useEffect(() => { setTexto(seleccionada?.numero ?? '') }, [value, seleccionada?.numero])
+
+  const escribir = (numero) => {
+    setTexto(numero)
+    // solo tocar el value del padre en transiciones reales (match exacto o campo vacío);
+    // si no, el useEffect de arriba borraría lo que el usuario está a medio escribir
+    if (numero === '') { onChange(''); return }
+    const u = unidades.find((x) => x.numero === numero)
+    if (u) onChange(u.id)
+  }
+
   return (
-    <div className="campo">
+    <label className="campo">
+      <span>{placeholder}</span>
       <input
-        placeholder="Buscar unidad…"
-        value={busqueda}
-        onChange={(e) => setBusqueda(e.target.value)}
-        style={{ marginBottom: '0.4rem' }}
+        list={listId}
+        value={texto}
+        onChange={(e) => escribir(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
       />
-      <select value={value} onChange={(e) => onChange(e.target.value)}>
-        <option value="">{placeholder}</option>
-        {Object.entries(TIPOS).map(([tipo, label]) => {
-          const grupo = filtradas.filter((u) => u.tipo === tipo)
-          return grupo.length > 0 && (
-            <optgroup key={tipo} label={label}>
-              {grupo.map((u) => <option key={u.id} value={u.id}>{u.numero}</option>)}
-            </optgroup>
-          )
-        })}
-      </select>
+      <datalist id={listId}>
+        {unidades.map((u) => <option key={u.id} value={u.numero}>{TIPOS[u.tipo] ?? u.tipo}</option>)}
+      </datalist>
+    </label>
+  )
+}
+
+const MI_A_KM = 1.609344
+
+// homologa una lectura de odómetro/millaje a Km, sea cual sea su unidad nativa. 'hrs' (horómetro,
+// motores estacionarios/PTO) no es una distancia -- no hay conversión posible, devuelve null.
+export const aKm = (valor, unidad) => {
+  const n = Number(valor)
+  if (valor == null || valor === '' || Number.isNaN(n)) return null
+  if (unidad === 'mi') return r2(n * MI_A_KM)
+  if (unidad === 'km') return n
+  return null
+}
+
+// captura un odómetro con selector Km/Millas y devuelve siempre el equivalente en Km al padre
+// (onChangeKm) -- así las unidades americanas (millas) y las nacionales (km) se pueden comparar
+// y sumar en los mismos cálculos (rendimiento, costeo, KPIs) sin mezclar unidades.
+export function CampoOdometro({ label, unidadPorDefecto, valorInicialKm, onChangeKm }) {
+  const [raw, setRaw] = useState(valorInicialKm != null ? String(valorInicialKm) : '')
+  const [unidadMedida, setUnidadMedida] = useState('km')
+  // si ya viene con un valor (editar algo existente), ese valor siempre está en Km -- no dejar
+  // que el default por unidadPorDefecto lo pise de vuelta a mi/hrs
+  const [tocado, setTocado] = useState(valorInicialKm != null)
+
+  // mismo motivo que en SelectorUnidad: unidadPorDefecto (de unidad.unidadLectura) puede llegar
+  // después del primer render -- solo aplica mientras el usuario no haya elegido a mano
+  useEffect(() => {
+    if (!tocado && unidadPorDefecto) setUnidadMedida(unidadPorDefecto)
+  }, [tocado, unidadPorDefecto])
+
+  const emitir = (valorRaw, um) => onChangeKm(aKm(valorRaw, um))
+
+  return (
+    <div className="fila-2">
+      <label className="campo"><span>{label}</span>
+        <input
+          type="number" inputMode="numeric" min="0" value={raw}
+          onChange={(e) => { setRaw(e.target.value); emitir(e.target.value, unidadMedida) }}
+        />
+      </label>
+      <label className="campo"><span>Unidad</span>
+        <select
+          value={unidadMedida}
+          onChange={(e) => { setTocado(true); setUnidadMedida(e.target.value); emitir(raw, e.target.value) }}
+        >
+          <option value="km">Kilómetros</option>
+          <option value="mi">Millas</option>
+        </select>
+      </label>
     </div>
   )
 }
@@ -478,14 +533,6 @@ function CompraForm({ usuario, wo, onDone }) {
         )
         if (errConceptos) throw errConceptos
       }
-      // agregación mensual para conciliación -- sigue en Firestore, ese módulo no ha migrado
-      const mes = f.fecha.slice(0, 7)
-      const totalDiesel = r2(filas.reduce((s, { g, orig }) => s + (orig.esDiesel ? g.totalUSD : 0), 0))
-      const litros = filas.reduce((s, { orig }) => s + (orig.esDiesel ? (Number(orig.litrosFacturados) || 0) : 0), 0)
-      await incBalance(mes, {
-        costoCompras: r2(filas.reduce((s, { g }) => s + g.totalUSD, 0)),
-        ...(totalDiesel > 0 ? { costoDieselFacturado: totalDiesel, litrosFacturados: litros } : {}),
-      })
       if (onDone) {
         onDone()
       } else {

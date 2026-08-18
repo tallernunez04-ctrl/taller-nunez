@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import { doc, onSnapshot } from 'firebase/firestore'
-import { db, subirArchivo } from './firebase'
-import { supabase } from './lib/supabaseClient'
+import { db } from './firebase'
+import { subirArchivo, supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { incBalance, useTipoCambio, useUnidades, SelectorUnidad } from './compras'
+import { useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 
@@ -17,6 +17,28 @@ import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabul
    registrar_cambio_custodia, terminar_viaje (ver migración rpc_viajes_transacciones). */
 
 export const ESTATUS_VIAJE = { en_proceso: 'En proceso', terminado: 'Terminado', conciliado: 'Conciliado' }
+
+// ponytail: "en_transito" no es un valor nuevo del enum estatus_viaje -- se deriva de
+// iniciado_en para no tener que tocar RLS ni los filtros que ya comparan estatus === 'en_proceso'
+// (terminar_viaje, la lista de viajes en curso de diesel.jsx, etc.). Si el negocio necesita
+// filtrar/reportar por "en tránsito" como estatus real de la base, ahí sí conviene el enum.
+export const estatusLabel = (v) => (v.estatus === 'en_proceso' && v.iniciadoEn ? 'En tránsito' : ESTATUS_VIAJE[v.estatus])
+
+// kmInicioKm ya viene homologado a km (ver CampoOdometro) sin importar si el chofer lo leyó en millas
+export async function iniciarViaje(viajeId, kmInicioKm) {
+  const { error: e1 } = await supabase.from('viajes').update({ iniciado_en: new Date().toISOString() }).eq('id', viajeId)
+  if (e1) throw e1
+  if (kmInicioKm != null) {
+    const { data: movs, error: e2 } = await supabase.from('viaje_movimientos')
+      .select('id').eq('viaje_id', viajeId).eq('activo', true).limit(1)
+    if (e2) throw e2
+    if (movs?.[0]) {
+      const { error: e3 } = await supabase.from('viaje_movimientos')
+        .update({ odometro_inicio: kmInicioKm }).eq('id', movs[0].id)
+      if (e3) throw e3
+    }
+  }
+}
 
 const sumaDias = (fecha, dias) => {
   const d = new Date(fecha + 'T00:00')
@@ -74,6 +96,7 @@ export const mapViaje = (v, resumenes = { entregas: {}, km: {}, clientes: {} }) 
     viaticosComprobados: Number(v.viaticos_comprobados) || 0,
     notas: v.notas ?? '',
     estatus: v.estatus,
+    iniciadoEn: v.iniciado_en,
     operadorProvisional: v.operador_provisional,
     terminadoAt: v.terminado_at,
     nominaId: v.nomina_id,
@@ -168,21 +191,21 @@ export async function marcarEntregada(entregaId, evidenciaPath) {
   if (error) throw error
 }
 
-export default function Viajes({ vista }) {
+export default function Viajes({ usuario, vista }) {
   if (vista === 'mis-viajes') return <MisViajes />
   if (vista === 'cobranza') return <Cobranza />
-  return <ListaViajes />
+  return <ListaViajes usuario={usuario} />
 }
 
 /* ---------- Lista + formulario (dispatch/admin) ---------- */
 
-function ListaViajes() {
+function ListaViajes({ usuario }) {
   const viajes = useViajes()
   const [editando, setEditando] = useState(null) // viaje | 'nuevo' | null
   const [fEstatus, setFEstatus] = useState('en_proceso')
 
   if (editando) {
-    return <ViajeForm viaje={editando === 'nuevo' ? null : editando} onDone={() => setEditando(null)} />
+    return <ViajeForm viaje={editando === 'nuevo' ? null : editando} usuario={usuario} onDone={() => setEditando(null)} />
   }
 
   const lista = (viajes ?? [])
@@ -209,7 +232,7 @@ function ListaViajes() {
           <div className="tarjeta-top">
             <strong>{v.folio}</strong>
             <span className={'badge ' + (v.estatus === 'en_proceso' ? 'en_proceso' : 'completado')}>
-              {ESTATUS_VIAJE[v.estatus]}
+              {estatusLabel(v)}
             </span>
           </div>
           <div className="muted">{v.fecha} · {v.clienteNombre} · Unidad <strong>{v.unidadNumero}</strong></div>
@@ -227,8 +250,8 @@ function ListaViajes() {
 
 const viajeVacio = () => ({
   fecha: hoy(),
-  unidadId: '', cajaId: '', operadorId: '', odometroInicio: '',
-  tramoId: '', km: '', precio: '',
+  unidadId: '', cajaId: '', operadorId: '',
+  tramoId: '', precio: '',
   viaticosEntregados: '', viaticosComprobados: '',
   notas: '',
 })
@@ -264,7 +287,7 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
   )
 }
 
-function ViajeForm({ viaje, onDone }) {
+function ViajeForm({ viaje, usuario, onDone }) {
   const unidades = useUnidades()
   const tc = useTipoCambio()
   const clientes = useClientes() ?? []
@@ -328,13 +351,12 @@ function ViajeForm({ viaje, onDone }) {
     setF({ ...f, unidadId: id, operadorId: base?.id ?? f.operadorId })
   }
 
-  const elegirTramo = (e) => {
-    const t = tramos.find((x) => x.id === e.target.value)
-    setF({ ...f, tramoId: e.target.value, km: f.km || (t?.km ? String(t.km) : '') })
-  }
+  const elegirTramo = (e) => setF({ ...f, tramoId: e.target.value })
 
-  // costeo estimado: diésel (km / mediana de rendimientos × $/L, a USD) + pago chofer del tabulador
-  const km = Number(f.km) || 0
+  // costeo estimado: diésel (km / mediana de rendimientos × $/L, a USD) + pago chofer del tabulador.
+  // el km ya no se captura a mano aquí -- lo anota el chofer (Km inicial/final) en Mis viajes,
+  // así que antes de que el viaje arranque el estimado de diésel simplemente es $0.
+  const km = viaje?.kmTotales ?? 0
   const rendimiento = rendMap[camionActualId] ?? 0
   const precioLitro = config?.precioDieselLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
@@ -349,7 +371,6 @@ function ViajeForm({ viaje, onDone }) {
       if (!f.unidadId) { alert('Selecciona la unidad'); return }
       if (!f.operadorId) { alert('Selecciona el operador'); return }
     }
-    if (!(km > 0)) { alert('Escribe los kilómetros del viaje'); return }
     setGuardando(true)
     try {
       if (viaje) {
@@ -359,7 +380,6 @@ function ViajeForm({ viaje, onDone }) {
           tramo_id: f.tramoId || null,
           origen: tramo?.origen ?? viaje.origen ?? '',
           destino: tramo?.destino ?? viaje.destino ?? '',
-          km,
           precio: Number(f.precio) || 0,
           costeo_diesel_usd: costoDieselUSD, costeo_pago_chofer: pagoChofer, costeo_total: costeoTotal,
           tipo_cambio_usado: tc,
@@ -386,7 +406,7 @@ function ViajeForm({ viaje, onDone }) {
           p_tipo_cambio_usado: tc,
           p_viaticos_entregados: Number(f.viaticosEntregados) || 0, p_notas: f.notas || null,
           p_chofer_id: operador.id, p_camion_id: f.unidadId, p_caja_id: f.cajaId || null,
-          p_odometro_inicio: Number(f.odometroInicio) || null,
+          p_odometro_inicio: null, // lo anota el chofer al dar "Inicio de viaje" en Mis viajes
           p_operador_provisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
           p_entregas: entregasJson,
         })
@@ -461,9 +481,6 @@ function ViajeForm({ viaje, onDone }) {
           {operadorBase && f.operadorId && f.operadorId !== operadorBase.id && (
             <p className="muted tc-nota">Asignación provisional — la unidad base de {operadorBase.nombre} no se modifica.</p>
           )}
-          <label className="campo"><span>Odómetro inicial (opcional)</span>
-            <input type="number" inputMode="numeric" min="0" value={f.odometroInicio} onChange={set('odometroInicio')} />
-          </label>
         </>
       )}
       {viaje && (
@@ -483,24 +500,21 @@ function ViajeForm({ viaje, onDone }) {
         </div>
       )}
 
-      <div className="fila-2">
-        <label className="campo"><span>Tramo (tabulador)</span>
-          <select value={f.tramoId} onChange={elegirTramo}>
-            <option value="">Selecciona tramo…</option>
-            {tramos.slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino)).map((t) => (
-              <option key={t.id} value={t.id}>{t.origen} → {t.destino} ({dinero(t.pagoChofer, 'USD')})</option>
-            ))}
-          </select>
-        </label>
-        <label className="campo"><span>Kilómetros</span>
-          <input type="number" inputMode="numeric" min="0" value={f.km} onChange={set('km')} />
-        </label>
-      </div>
+      <label className="campo"><span>Tramo (tabulador)</span>
+        <select value={f.tramoId} onChange={elegirTramo}>
+          <option value="">Selecciona tramo…</option>
+          {tramos.slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino)).map((t) => (
+            <option key={t.id} value={t.id}>{t.origen} → {t.destino} ({dinero(t.pagoChofer, 'USD')})</option>
+          ))}
+        </select>
+      </label>
 
       <div className="fila-2">
-        <label className="campo"><span>Ingreso del viaje (USD)</span>
-          <input type="number" inputMode="decimal" min="0" step="0.01" value={f.precio} onChange={set('precio')} />
-        </label>
+        {usuario?.rol === 'admin' && (
+          <label className="campo"><span>Ingreso del viaje (USD)</span>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={f.precio} onChange={set('precio')} />
+          </label>
+        )}
         <label className="campo"><span>Viáticos entregados (USD)</span>
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.viaticosEntregados} onChange={set('viaticosEntregados')} />
         </label>
@@ -869,6 +883,7 @@ function ModalCambio({ viaje, movActivo, operadores, unidades, onDone }) {
 function MisViajes() {
   // RLS ya limita a los viajes donde el chofer es el actual -- no hace falta filtrar por email
   const viajes = useViajes()
+  const unidades = useUnidades()
 
   return (
     <div>
@@ -880,21 +895,54 @@ function MisViajes() {
           <div className="tarjeta-top">
             <strong>{v.folio}</strong>
             <span className={'badge ' + (v.estatus === 'en_proceso' ? 'en_proceso' : 'completado')}>
-              {ESTATUS_VIAJE[v.estatus]}
+              {estatusLabel(v)}
             </span>
           </div>
           <div className="muted">{v.fecha} · {v.origen} → {v.destino}</div>
           <div className="muted">Unidad {v.unidadNumero}{v.cajaNumero && ` · Caja ${v.cajaNumero}`}</div>
           <div className="muted">Viáticos entregados: {dinero(v.viaticosEntregados, 'USD')}</div>
-          {v.estatus === 'en_proceso' && <EntregasChofer viajeId={v.id} />}
+          {v.estatus === 'en_proceso' && (v.iniciadoEn
+            ? <PanelViajeEnCurso viajeId={v.id} unidadPorDefecto={unidades.find((u) => u.id === v.unidadId)?.unidadLectura} inicioTexto={fmtTs(v.iniciadoEn)} />
+            : <BotonInicioViaje viajeId={v.id} unidadPorDefecto={unidades.find((u) => u.id === v.unidadId)?.unidadLectura} />)}
         </div>
       ))}
     </div>
   )
 }
 
+function BotonInicioViaje({ viajeId, unidadPorDefecto }) {
+  const [kmInicio, setKmInicio] = useState(null)
+  const [guardando, setGuardando] = useState(false)
+  const iniciar = async () => {
+    if (kmInicio == null) { alert('Escribe el kilometraje inicial'); return }
+    setGuardando(true)
+    try { await iniciarViaje(viajeId, kmInicio) } catch (err) { alert('Error: ' + err.message) } finally { setGuardando(false) }
+  }
+  return (
+    <div className="tarjeta detalle">
+      <CampoOdometro label="Km inicial" unidadPorDefecto={unidadPorDefecto} onChangeKm={setKmInicio} />
+      <button className="btn-primario" disabled={guardando} onClick={iniciar}>
+        {guardando ? 'Guardando…' : 'Inicio de viaje'}
+      </button>
+    </div>
+  )
+}
+
+// envuelve el tramo "ya iniciado" de un viaje: muestra cuándo arrancó, pide el km final
+// (mismo selector Km/Millas que el inicio) y se lo pasa a EntregasChofer para el auto-cierre
+function PanelViajeEnCurso({ viajeId, unidadPorDefecto, inicioTexto }) {
+  const [kmFinal, setKmFinal] = useState(null)
+  return (
+    <>
+      <div className="muted">Inicio de viaje: {inicioTexto}</div>
+      <CampoOdometro label="Km final (al terminar)" unidadPorDefecto={unidadPorDefecto} onChangeKm={setKmFinal} />
+      <EntregasChofer viajeId={viajeId} kmFinalKm={kmFinal} />
+    </>
+  )
+}
+
 // entregas del viaje en curso: el chofer las marca entregadas con foto de evidencia opcional
-function EntregasChofer({ viajeId }) {
+function EntregasChofer({ viajeId, kmFinalKm }) {
   const [entregas, setEntregas] = useState(null)
   const [fotos, setFotos] = useState({}) // entregaId -> File
   const [subiendo, setSubiendo] = useState('')
@@ -917,9 +965,30 @@ function EntregasChofer({ viajeId }) {
     if (!confirm(`¿Marcar como entregada la entrega de ${e.clienteNombre}?`)) return
     setSubiendo(e.id)
     try {
+      // se cuenta directo en la base (no con el `entregas` del estado local, que puede estar
+      // desactualizado si el chofer marca varias entregas seguidas rápido) y ANTES de marcar
+      // esta, para poder frenar aquí si es la última y todavía no hay km final -- si marcáramos
+      // primero y bloqueáramos después, la entrega quedaría "entregada" sin viaje terminado y
+      // sin forma de reintentar (el botón desaparece en cuanto estatus === 'entregada').
+      const { count, error: countError } = await supabase.from('viaje_entregas')
+        .select('id', { count: 'exact', head: true }).eq('viaje_id', viajeId).eq('estatus', 'pendiente')
+      if (countError) throw countError
+      const esUltima = count === 1
+      if (esUltima && kmFinalKm == null) {
+        alert('Esta es la última entrega -- escribe el kilometraje final antes de marcarla, para poder cerrar el viaje.')
+        return
+      }
       const archivo = fotos[e.id]
       const url = archivo ? await subirArchivo(`viajes/${viajeId}/pod_${e.id}_${archivo.name}`, archivo) : ''
       await marcarEntregada(e.id, url)
+      // el viaje se termina solo y pasa a Cobranza -- dispatch ya no tiene que reabrirlo,
+      // conserva el cierre manual como respaldo
+      if (esUltima) {
+        const { error } = await supabase.rpc('terminar_viaje', {
+          p_viaje_id: viajeId, p_odometro_fin: kmFinalKm, p_viaticos_comprobados: null,
+        })
+        if (error) throw error
+      }
     } catch (err) {
       console.error(err)
       alert('Error: ' + err.message)
@@ -1048,10 +1117,6 @@ function CobranzaDetalle({ viaje, onVolver }) {
         cobranza_factura_path: facturaURL || null, cobranza_xml_path: xmlURL || null,
       }).eq('id', viaje.id)
       if (error) throw error
-      // el ingreso entra al balance del mes de facturación (solo la primera vez)
-      if (!facturado) {
-        await incBalance(fechaFactura.slice(0, 7), { ingresosViajes: viaje.precio || 0 })
-      }
       alert('Factura registrada')
     } catch (e) {
       console.error(e)
