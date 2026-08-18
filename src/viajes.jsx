@@ -1,9 +1,7 @@
 import { useEffect, useState } from 'react'
-import { doc, onSnapshot } from 'firebase/firestore'
-import { db } from './firebase'
 import { subirArchivo, supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro } from './compras'
+import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 
@@ -293,7 +291,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const clientes = useClientes() ?? []
   const operadores = useOperadores() ?? []
   const tramos = useTabuladores() ?? []
-  const [config, setConfig] = useState(null)
+  const precioDieselLitro = usePrecioDiesel()
   const [rendMap, setRendMap] = useState({})
   const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
   const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven aparte
@@ -303,8 +301,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const [terminando, setTerminando] = useState(false)
   const [odometroFin, setOdometroFin] = useState('')
   const [guardando, setGuardando] = useState(false)
-
-  useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => setConfig(s.data() ?? {}), console.error), [])
 
   // mediana de rendimiento por unidad -- ya no vive en el doc de la unidad (ver diesel.jsx)
   useEffect(() => {
@@ -358,7 +354,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
   // así que antes de que el viaje arranque el estimado de diésel simplemente es $0.
   const km = viaje?.kmTotales ?? 0
   const rendimiento = rendMap[camionActualId] ?? 0
-  const precioLitro = config?.precioDieselLitro || 0
+  const precioLitro = precioDieselLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
   const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
   const pagoChofer = tramo?.pagoChofer || 0

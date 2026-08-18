@@ -1,6 +1,4 @@
 import { useEffect, useId, useMemo, useState } from 'react'
-import { collection, doc, onSnapshot } from 'firebase/firestore'
-import { db } from './firebase'
 import { subirArchivo, supabase } from './lib/supabaseClient'
 import { useProveedores } from './catalogos'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
@@ -14,7 +12,7 @@ export const METODOS = [
 ]
 export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
 
-// tc = pesos por 1 USD (config/general.tipoCambioUSD). Empresa fronteriza: todo se consolida en USD.
+// tc = pesos por 1 USD (config.tipo_cambio_usd). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))
 
 // km/mi que faltan para el próximo mantenimiento (null = sin ciclo configurado)
@@ -67,20 +65,6 @@ export function useUnidades() {
   return unidades
 }
 
-export function useTipoCambio() {
-  const [tc, setTc] = useState(null)
-  useEffect(() => onSnapshot(doc(db, 'config', 'general'),
-    (s) => setTc(s.data()?.tipoCambioUSD ?? null), console.error), [])
-  return tc
-}
-
-export function useColeccion(nombre) {
-  const [docs, setDocs] = useState(null)
-  useEffect(() => onSnapshot(collection(db, nombre),
-    (s) => setDocs(s.docs.map((d) => ({ id: d.id, ...d.data() }))), console.error), [nombre])
-  return docs
-}
-
 // hook genérico realtime para Supabase: select inicial (con embeds/filtros vía `construir`,
 // que recibe el query builder ya apuntando a la tabla) + canal con nombre único por instancia
 // montada -- mismo motivo que useUnidades: dos formularios abiertos a la vez no pueden
@@ -103,6 +87,16 @@ export function useTabla(tabla, mapear, construir) {
     return () => supabase.removeChannel(canal)
   }, [tabla])
   return datos
+}
+
+// config es singleton (una sola fila, id=true) -- se reusa useTabla y se toma la primera fila
+export const useTipoCambio = () => {
+  const filas = useTabla('config', (c) => c)
+  return filas?.[0] ? Number(filas[0].tipo_cambio_usd) : null
+}
+export const usePrecioDiesel = () => {
+  const filas = useTabla('config', (c) => c)
+  return filas?.[0] ? Number(filas[0].precio_diesel_litro) : null
 }
 
 // selects con los embeds de FK que necesita la UI (evita denormalizar unidadNumero/proveedor/etc.)

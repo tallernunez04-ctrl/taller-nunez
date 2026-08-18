@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
-import { doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
-import { db } from './firebase'
 import { supabase } from './lib/supabaseClient'
 import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
 import {
-  ESTATUS, mapCompra, mapWO, METODOS, SELECT_COMPRA, SELECT_WO, SelectorUnidad, useTabla, useUnidades,
+  ESTATUS, mapCompra, mapWO, METODOS, SELECT_COMPRA, SELECT_WO, SelectorUnidad,
+  useTabla, useUnidades, useTipoCambio, usePrecioDiesel,
 } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -255,11 +254,11 @@ function Dashboard() {
   const unidades = useUnidades()
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA)) ?? []
   const wos = useTabla('work_orders', mapWO, (q) => q.select(SELECT_WO)) ?? []
+  const tc = useTipoCambio()
+  const precioDiesel = usePrecioDiesel()
 
-  useEffect(() => onSnapshot(doc(db, 'config', 'general'), (s) => {
-    setTcInput(String(s.data()?.tipoCambioUSD ?? ''))
-    setDieselInput(String(s.data()?.precioDieselLitro ?? ''))
-  }, console.error), [])
+  useEffect(() => { if (tc != null) setTcInput(String(tc)) }, [tc])
+  useEffect(() => { if (precioDiesel != null) setDieselInput(String(precioDiesel)) }, [precioDiesel])
 
   const comprasMes = compras.filter((c) => (c.fecha || '').startsWith(mes))
   const wosCompletadas = wos.filter((w) =>
@@ -283,9 +282,8 @@ function Dashboard() {
   const actualizarTC = async () => {
     const v = Number(tcInput)
     if (!v || v <= 0) { alert('Tipo de cambio inválido'); return }
-    try {
-      await updateDoc(doc(db, 'config', 'general'), { tipoCambioUSD: v })
-    } catch (e) { alert('Error: ' + e.message) }
+    const { error } = await supabase.from('config').update({ tipo_cambio_usd: v }).eq('id', true)
+    if (error) alert('Error: ' + error.message)
   }
 
   return (
@@ -313,9 +311,8 @@ function Dashboard() {
         <button className="btn-primario" onClick={async () => {
           const v = Number(dieselInput)
           if (!v || v <= 0) { alert('Precio inválido'); return }
-          try {
-            await updateDoc(doc(db, 'config', 'general'), { precioDieselLitro: v })
-          } catch (e) { alert('Error: ' + e.message) }
+          const { error } = await supabase.from('config').update({ precio_diesel_litro: v }).eq('id', true)
+          if (error) alert('Error: ' + error.message)
         }}>Actualizar</button>
       </div>
 
@@ -575,11 +572,6 @@ function UsuarioForm({ existente, onDone }) {
   const [f, setF] = useState(existente ?? { email: '', nombre: '', rol: 'taller', activo: true })
   const [guardando, setGuardando] = useState(false)
 
-  // mientras compras/taller/viajes/diésel sigan en Firestore, firestore.rules necesita
-  // este mismo doc en usuarios/{email} -- se escribe en paralelo al de Supabase (fuente
-  // real de login) hasta que se migre el resto y se pueda borrar el puente.
-  const espejoFirestore = (email, datos) => setDoc(doc(db, 'usuarios', email), { email, ...datos }, { merge: true })
-
   const guardar = async () => {
     setGuardando(true)
     try {
@@ -587,7 +579,6 @@ function UsuarioForm({ existente, onDone }) {
         const { error } = await supabase.from('perfiles')
           .update({ nombre: f.nombre, rol: f.rol, activo: f.activo }).eq('id', existente.id)
         if (error) throw error
-        await espejoFirestore(existente.email, { nombre: f.nombre, rol: f.rol, activo: f.activo })
       } else {
         const email = f.email.trim().toLowerCase()
         if (!email.includes('@')) { alert('Escribe un correo válido'); return }
@@ -595,7 +586,6 @@ function UsuarioForm({ existente, onDone }) {
           body: { email, nombre: f.nombre, rol: f.rol },
         })
         if (error) throw error
-        await espejoFirestore(email, { nombre: f.nombre, rol: f.rol, activo: true })
         alert(`Usuario creado.\n\nEmail: ${data.email}\nContraseña temporal: ${data.password}\n\nCompártela ahora, no se vuelve a mostrar.`)
       }
       onDone()

@@ -1,7 +1,5 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
-import { onAuthStateChanged, signInWithPopup, signOut as salirFirebase } from 'firebase/auth'
 import { supabase } from './lib/supabaseClient'
-import { auth, provider } from './firebase'
 import Taller from './taller'
 import Compras from './compras'
 import Catalogos from './catalogos'
@@ -81,18 +79,6 @@ export default function App() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [colapsado, setColapsado] = useState(() => localStorage.getItem('sidebarColapsado') === '1')
-  // firestore.rules autoriza con la sesión de Firebase Auth (request.auth), no con la de
-  // Supabase -- mientras los datos de negocio sigan en Firestore hace falta mantener ambas
-  // sesiones vivas en paralelo. null = todavía sin checar, false = falta conectar, true = ok.
-  const [firebaseListo, setFirebaseListo] = useState(null)
-  const [errorFirebase, setErrorFirebase] = useState('')
-
-  useEffect(() => onAuthStateChanged(auth, (u) => setFirebaseListo(!!u)), [])
-
-  const conectarFirebase = () => {
-    setErrorFirebase('')
-    signInWithPopup(auth, provider).catch((e) => setErrorFirebase(e.message))
-  }
 
   useEffect(() => {
     const cargarPerfil = async (session) => {
@@ -136,7 +122,6 @@ export default function App() {
   }
   const salir = () => {
     supabase.auth.signOut()
-    salirFirebase(auth)
   }
   const toggleSidebar = () => {
     localStorage.setItem('sidebarColapsado', colapsado ? '0' : '1')
@@ -183,20 +168,6 @@ export default function App() {
         <h1 className="marca">Taller <span>Nuñez</span></h1>
         <p className="error">Acceso no autorizado — contacta al administrador</p>
         <button className="btn-secundario" onClick={salir}>Usar otra cuenta</button>
-      </div>
-    )
-  }
-
-  // paso intermedio: los datos siguen en Firestore, que autoriza con la sesión de Firebase.
-  // Es un solo click por dispositivo -- Firebase mantiene la sesión entre recargas.
-  if (firebaseListo !== true) {
-    return (
-      <div className="pantalla-centrada">
-        <h1 className="marca">Taller <span>Nuñez</span></h1>
-        <p className="muted">Falta un paso: conecta tu cuenta de Google para acceder a los datos</p>
-        <button className="btn-primario" onClick={conectarFirebase}>Conectar con Google</button>
-        {errorFirebase && <p className="error">{errorFirebase}</p>}
-        <button className="btn-secundario" onClick={salir}>Salir</button>
       </div>
     )
   }
