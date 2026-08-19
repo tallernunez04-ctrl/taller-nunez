@@ -28,12 +28,19 @@ export async function iniciarViaje(viajeId, kmInicioKm) {
   if (e1) throw e1
   if (kmInicioKm != null) {
     const { data: movs, error: e2 } = await supabase.from('viaje_movimientos')
-      .select('id').eq('viaje_id', viajeId).eq('activo', true).limit(1)
+      .select('id, camion_id').eq('viaje_id', viajeId).eq('activo', true).limit(1)
     if (e2) throw e2
     if (movs?.[0]) {
       const { error: e3 } = await supabase.from('viaje_movimientos')
         .update({ odometro_inicio: kmInicioKm }).eq('id', movs[0].id)
       if (e3) throw e3
+      // sincroniza unidades.ultima_lectura (consolidada para el badge de mantenimiento) --
+      // este es el punto real donde se captura el Km inicial, crear_viaje siempre lo manda null
+      const { data: unidad } = await supabase.from('unidades').select('ultima_lectura').eq('id', movs[0].camion_id).single()
+      if ((unidad?.ultima_lectura ?? 0) < kmInicioKm) {
+        const { error: e4 } = await supabase.from('unidades').update({ ultima_lectura: kmInicioKm }).eq('id', movs[0].camion_id)
+        if (e4) throw e4
+      }
     }
   }
 }

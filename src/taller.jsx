@@ -15,6 +15,7 @@ export const FALLA_LABEL = Object.fromEntries(FALLAS)
 export const TIPOS = { truck: 'Trucks', reefer: 'Reefers', plataforma: 'Plataformas', caja_seca: 'Cajas Secas' }
 export const LECTURA_LABEL = { mi: 'Millaje (mi)', km: 'Kilometraje (km)', hrs: 'Horómetro (hrs)' }
 export const ACCIONES_LLANTA = [['reemplazo', 'Reemplazo'], ['rotacion', 'Rotación'], ['reparacion', 'Reparación']]
+export const TIPOS_SERVICIO = [['correctivo', 'Correctivo'], ['preventivo', 'Preventivo']]
 
 // piezasRequeridas era string en docs viejos; normaliza siempre a array
 export const piezasLista = (p) => (Array.isArray(p) ? p : p ? [p] : [])
@@ -71,6 +72,7 @@ function WOForm({ usuario, wo, onDone }) {
       chofer: '',
       mecanico: usuario.nombre,
       tipoFalla: [],
+      tipoServicio: 'correctivo',
       diagnostico: '', piezasRequeridas: [''], notasMecanico: '',
       llantaAccion: '', llantaPosiciones: [''], llantaNotas: '',
     })
@@ -123,42 +125,39 @@ function WOForm({ usuario, wo, onDone }) {
         alert('Para el análisis de llantas hace falta el millaje/kilometraje de la WO'); return
       }
     }
+    if (completar && f.tipoServicio === 'preventivo' && f.lectura.unidad !== 'km') {
+      alert('Para completar un servicio preventivo hace falta el millaje/kilometraje de la WO'); return
+    }
     if (completar && !confirm('¿Confirmar que la reparación está completa? Esta acción no se puede deshacer.')) return
     setGuardando(true)
     try {
-      const datos = {
-        fecha: f.fecha,
-        unidad_id: f.unidadId,
-        lectura_valor: Number(f.lectura.valor) || null,
+      // el folio WO-XXXX lo asigna la secuencia de Postgres al insertar, no hace falta contador propio.
+      // guardar_work_order es atómico: WO + llantas + sincroniza unidades.ultima_lectura (nunca
+      // retrocede) + si se completa como preventivo, registra mantenimiento_preventivo y
+      // actualiza unidades.ultimo_mantenimiento_km -- ver migración mantenimiento_preventivo_fase1*.
+      const { error } = await supabase.rpc('guardar_work_order', {
+        p_wo_id: wo?.id ?? null,
+        p_fecha: f.fecha,
+        p_unidad_id: f.unidadId,
+        p_lectura_valor: Number(f.lectura.valor) || null,
         // el valor ya viene homologado a Km (CampoOdometro) salvo horómetro, que no es distancia
-        lectura_unidad: f.lectura.unidad === 'hrs' ? 'hrs' : (f.lectura.unidad ? 'km' : null),
-        chofer_texto: f.chofer || null,
-        mecanico_texto: f.mecanico || null,
-        tipo_falla: f.tipoFalla,
-        diagnostico: f.diagnostico || null,
-        piezas_requeridas: f.piezasRequeridas.map((p) => p.trim()).filter(Boolean),
-        notas_mecanico: f.notasMecanico || null,
-        estatus: completar ? 'completado' : 'en_proceso',
-        ...(completar ? { completado_at: new Date().toISOString() } : {}),
-      }
-      // el folio WO-XXXX lo asigna la secuencia de Postgres al insertar, no hace falta contador propio
-      const { data: guardada, error } = wo
-        ? await supabase.from('work_orders').update(datos).eq('id', wo.id).select('id').single()
-        : await supabase.from('work_orders').insert({ ...datos, creado_por: usuario.id }).select('id').single()
+        p_lectura_unidad: f.lectura.unidad === 'hrs' ? 'hrs' : (f.lectura.unidad ? 'km' : null),
+        p_chofer_texto: f.chofer || null,
+        p_mecanico_texto: f.mecanico || null,
+        p_tipo_falla: f.tipoFalla,
+        p_diagnostico: f.diagnostico || null,
+        p_piezas_requeridas: f.piezasRequeridas.map((p) => p.trim()).filter(Boolean),
+        p_notas_mecanico: f.notasMecanico || null,
+        p_tipo_servicio: f.tipoServicio,
+        p_completar: completar,
+        p_creado_por: usuario.id,
+        p_llantas_activas: llantasActivas,
+        p_llanta_accion: llantasActivas ? f.llantaAccion : null,
+        p_llanta_posiciones: llantasActivas ? posicionesLimpias : null,
+        p_llanta_km_evento: llantasActivas ? kmEvento : null,
+        p_llanta_notas: llantasActivas ? (f.llantaNotas || null) : null,
+      })
       if (error) throw error
-
-      if (llantasActivas) {
-        const { error: errLlanta } = await supabase.from('wo_llantas').upsert({
-          work_order_id: guardada.id, unidad_id: f.unidadId, accion: f.llantaAccion,
-          posiciones: posicionesLimpias, km_evento: kmEvento, notas: f.llantaNotas || null,
-        }, { onConflict: 'work_order_id' })
-        if (errLlanta) throw errLlanta
-      } else if (wo) {
-        // se destildó "Llantas" en una WO que ya tenía un evento capturado -- se borra, no
-        // queda dato huérfano contaminando el KPI
-        const { error: errDel } = await supabase.from('wo_llantas').delete().eq('work_order_id', wo.id)
-        if (errDel) throw errDel
-      }
       onDone()
     } catch (e) {
       console.error(e)
@@ -229,6 +228,20 @@ function WOForm({ usuario, wo, onDone }) {
         <span>Mecánico</span>
         <input value={f.mecanico} onChange={set('mecanico')} />
       </label>
+      <div className="campo">
+        <span>Tipo de servicio</span>
+        <div className="chips">
+          {TIPOS_SERVICIO.map(([id, label]) => (
+            <button
+              type="button" key={id}
+              className={f.tipoServicio === id ? 'chip chip-toggle activo' : 'chip chip-toggle'}
+              onClick={() => setF({ ...f, tipoServicio: id })}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
       <div className="campo">
         <span>Tipo de falla</span>
         <div className="chips">

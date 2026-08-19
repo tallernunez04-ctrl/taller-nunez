@@ -21,12 +21,14 @@ export const paraMantenimiento = (u) => {
   return (Number(u.ultimoMantenimientoKm) || 0) + Number(u.mantenimientoCadaX) - u.ultimaLectura
 }
 
+// próximo = dentro del último 10% del intervalo (ej. cada 10,000 km, avisa desde los últimos 1,000)
 export function BadgeMantenimiento({ unidad }) {
   const restante = paraMantenimiento(unidad)
-  if (restante === null || restante > 2000) return null
-  return restante <= 0
-    ? <span className="badge vencido">Mantenimiento vencido</span>
-    : <span className="badge alerta">Mantenimiento en {restante.toLocaleString()} {unidad.unidadLectura}</span>
+  if (restante === null) return null
+  const margen = Number(unidad.mantenimientoCadaX) * 0.1
+  if (restante <= 0) return <span className="badge vencido">Mantenimiento vencido</span>
+  if (restante <= margen) return <span className="badge alerta">Mantenimiento próximo, en {restante.toLocaleString()} {unidad.unidadLectura}</span>
+  return null
 }
 
 // mapea columnas snake_case de Supabase a la forma camelCase que ya esperaba el resto de la app (ex-Firestore)
@@ -113,6 +115,7 @@ export const mapWO = (w) => ({
   chofer: w.chofer_texto ?? '',
   mecanico: w.mecanico_texto ?? '',
   tipoFalla: w.tipo_falla ?? [],
+  tipoServicio: w.tipo_servicio ?? 'correctivo',
   diagnostico: w.diagnostico ?? '',
   piezasRequeridas: w.piezas_requeridas ?? [],
   notasMecanico: w.notas_mecanico ?? '',
