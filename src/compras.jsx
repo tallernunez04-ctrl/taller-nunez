@@ -186,6 +186,23 @@ export const mapCompra = (c) => ({
 
 // input con <datalist> nativo: escribir muestra sugerencias reales del navegador (antes era
 // un buscador de adorno que filtraba un <select> oculto y no mostraba nada al escribir).
+// barra de acciones fija arriba del formulario (patrón ERP: Guardar/Atrás siempre visibles,
+// sin tener que bajar al final de un formulario largo) -- `extra` recibe botones adicionales
+// específicos del formulario (ej. "Terminar viaje"), se renderizan entre Atrás y Guardar
+export function BarraAcciones({ onAtras, atrasLabel = 'Atrás', onGuardar, guardando, guardarLabel = 'Guardar', guardarDisabled, extra }) {
+  return (
+    <div className="barra-acciones">
+      <button type="button" className="btn-secundario" disabled={guardando} onClick={onAtras}>← {atrasLabel}</button>
+      {extra}
+      {onGuardar && (
+        <button type="button" className="btn-primario" disabled={guardando || guardarDisabled} onClick={onGuardar}>
+          {guardando ? 'Guardando…' : guardarLabel}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
   const listId = useId()
   const seleccionada = unidades.find((u) => u.id === value)

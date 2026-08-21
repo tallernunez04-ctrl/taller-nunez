@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { subirArchivo, supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro } from './compras'
+import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 
@@ -524,6 +524,25 @@ function ViajeForm({ viaje, usuario, onDone }) {
 
   return (
     <div>
+      <BarraAcciones
+        onAtras={onDone}
+        onGuardar={soloLectura ? undefined : guardar}
+        guardando={guardando}
+        extra={viaje && viaje.estatus === 'en_proceso' && !terminando && !soloLectura && (
+          <button
+            type="button" className="btn-completar" disabled={guardando}
+            onClick={() => {
+              if ((viaje.entregasPendientes ?? 0) > 0) {
+                alert(`Hay ${viaje.entregasPendientes} entrega(s) pendiente(s) — entrégalas antes de terminar el viaje.`)
+                return
+              }
+              setTerminando(true)
+            }}
+          >
+            Terminar viaje
+          </button>
+        )}
+      />
       <h2>{viaje ? `Viaje ${viaje.folio}` : 'Nuevo viaje'}</h2>
       {soloLectura && <p className="muted">Viaje conciliado en nómina — solo lectura.</p>}
       <label className="campo"><span>Fecha</span>
@@ -683,28 +702,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
 
       {viaje && <MovimientosTimeline movs={movs} />}
 
-      {!soloLectura && (
-        <div className="acciones">
-          <button className="btn-primario" disabled={guardando} onClick={guardar}>
-            {guardando ? 'Guardando…' : 'Guardar'}
-          </button>
-          {viaje && viaje.estatus === 'en_proceso' && !terminando && (
-            <button
-              className="btn-completar" disabled={guardando}
-              onClick={() => {
-                if ((viaje.entregasPendientes ?? 0) > 0) {
-                  alert(`Hay ${viaje.entregasPendientes} entrega(s) pendiente(s) — entrégalas antes de terminar el viaje.`)
-                  return
-                }
-                setTerminando(true)
-              }}
-            >
-              Terminar viaje
-            </button>
-          )}
-          <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-        </div>
-      )}
       {terminando && (
         <div className="tarjeta detalle">
           <label className="campo"><span>Odómetro final (opcional)</span>
@@ -716,12 +713,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
           </div>
         </div>
       )}
-      {soloLectura && (
-        <div className="acciones">
-          <button className="btn-secundario" onClick={onDone}>Volver</button>
-        </div>
-      )}
-
       {modalCambio && movActivo && (
         <ModalCambio
           viaje={viaje} movActivo={movActivo}

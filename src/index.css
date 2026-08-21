@@ -247,6 +247,25 @@ textarea { min-height: 4.5rem; resize: vertical; }
 }
 .acciones .btn-primario { margin-top: 0; }
 .acciones .btn-secundario { margin-top: 0; }
+
+/* barra ERP fija arriba de un formulario -- Guardar/Atrás (y acciones extra del formulario)
+   siempre visibles sin bajar hasta el final, pegada justo debajo del encabezado sticky */
+.barra-acciones {
+  position: sticky;
+  top: 3.5rem;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+  margin: -1.25rem -1rem 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.barra-acciones .btn-primario,
+.barra-acciones .btn-secundario,
+.barra-acciones .btn-completar { margin-top: 0; }
 .btn-completar {
   background: var(--accent);
   color: #1A1A1A;
