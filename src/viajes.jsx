@@ -61,26 +61,30 @@ export const SELECT_VIAJE = `*,
   camion:unidades!viajes_camion_actual_id_fkey(numero),
   caja:unidades!viajes_caja_actual_id_fkey(numero)`
 const SELECT_ENTREGA = '*, clientes(razon_social)'
+const SELECT_CARGA = '*, clientes(razon_social)'
 const SELECT_MOVIMIENTO = `*,
   operadores(nombre),
   camion:unidades!viaje_movimientos_camion_id_fkey(numero)`
 
 // vistas que reemplazan los contadores que antes vivían en el doc del viaje (increment())
 async function cargarResumenes() {
-  const [ent, km, cli] = await Promise.all([
+  const [ent, car, km, cli] = await Promise.all([
     supabase.from('v_viaje_entregas_resumen').select('*'),
+    supabase.from('v_viaje_cargas_resumen').select('*'),
     supabase.from('v_viaje_kilometraje').select('*'),
     supabase.from('v_viaje_clientes').select('*'),
   ])
   return {
     entregas: Object.fromEntries((ent.data ?? []).map((x) => [x.viaje_id, x])),
+    cargas: Object.fromEntries((car.data ?? []).map((x) => [x.viaje_id, x])),
     km: Object.fromEntries((km.data ?? []).map((x) => [x.viaje_id, x])),
     clientes: Object.fromEntries((cli.data ?? []).map((x) => [x.viaje_id, x])),
   }
 }
 
-export const mapViaje = (v, resumenes = { entregas: {}, km: {}, clientes: {} }) => {
+export const mapViaje = (v, resumenes = { entregas: {}, cargas: {}, km: {}, clientes: {} }) => {
   const ent = resumenes.entregas[v.id]
+  const car = resumenes.cargas[v.id]
   const cli = resumenes.clientes[v.id]
   return {
     id: v.id,
@@ -125,6 +129,8 @@ export const mapViaje = (v, resumenes = { entregas: {}, km: {}, clientes: {} }) 
     cajaNumero: v.caja?.numero ?? '',
     // derivados de vistas (antes contadores denormalizados)
     entregasPendientes: ent?.entregas_pendientes ?? 0,
+    cargasTotal: car?.cargas_total ?? 0,
+    cargasPendientes: car?.cargas_pendientes ?? 0,
     kmTotales: Number(resumenes.km[v.id]?.km_totales) || 0,
     clientesIds: cli?.cliente_ids ?? [],
     clienteNombre: cli?.clientes_texto ?? '',
@@ -142,6 +148,18 @@ const mapEntrega = (e) => ({
   estatus: e.estatus,
   fechaHoraEntregaReal: e.fecha_hora_entrega_real,
   evidenciaUrl: e.evidencia_path ?? '',
+})
+
+const mapCarga = (c) => ({
+  id: c.id,
+  clienteId: c.cliente_id,
+  clienteNombre: c.clientes?.razon_social ?? '',
+  direccionCargaId: c.direccion_id,
+  direccion: c.direccion_snapshot ?? '',
+  mercancia: c.mercancia ?? '',
+  ordenSecuencia: c.orden_secuencia,
+  estatus: c.estatus,
+  fechaHoraRecogido: c.fecha_hora_recogido,
 })
 
 const mapMovimiento = (m) => ({
@@ -181,6 +199,7 @@ export function useViajes() {
       .channel(`viajes-cambios-${crypto.randomUUID()}`)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viajes' }, cargar)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_entregas' }, cargar)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_cargas' }, cargar)
       .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_movimientos' }, cargar)
       .subscribe()
     return () => supabase.removeChannel(canal)
@@ -193,6 +212,13 @@ export async function marcarEntregada(entregaId, evidenciaPath) {
   const { error } = await supabase.from('viaje_entregas').update({
     estatus: 'entregada', fecha_hora_entrega_real: new Date().toISOString(), evidencia_path: evidenciaPath || null,
   }).eq('id', entregaId)
+  if (error) throw error
+}
+
+export async function marcarCargaRecogida(cargaId) {
+  const { error } = await supabase.from('viaje_cargas').update({
+    estatus: 'recogida', fecha_hora_recogido: new Date().toISOString(),
+  }).eq('id', cargaId)
   if (error) throw error
 }
 
@@ -263,6 +289,7 @@ const viajeVacio = () => ({
 })
 
 const entregaVacia = () => ({ clienteId: '', direccionEntregaId: '', mercancia: '' })
+const cargaVacia = () => ({ clienteId: '', direccionCargaId: '', mercancia: '' })
 
 // campos de una entrega (cliente + dirección + mercancía); se usa en alta de viaje y en agregar entrega
 function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
@@ -293,6 +320,36 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
   )
 }
 
+// campos de un punto de carga (cliente + dirección + mercancía) -- mismo selector de direcciones
+// que entrega, cualquier dirección del cliente sirve para ambos usos (sin distinguir tipo)
+function CargaCampos({ c, onChange, clientes, dirs, cargarDirs }) {
+  return (
+    <>
+      <label className="campo"><span>Cliente</span>
+        <select
+          value={c.clienteId}
+          onChange={(ev) => { cargarDirs(ev.target.value); onChange({ ...c, clienteId: ev.target.value, direccionCargaId: '' }) }}
+        >
+          <option value="">Selecciona cliente…</option>
+          {clientes.slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial)).map((cl) => (
+            <option key={cl.id} value={cl.id}>{cl.razonSocial}</option>
+          ))}
+        </select>
+      </label>
+      <label className="campo"><span>Dirección de carga</span>
+        <select value={c.direccionCargaId} onChange={(ev) => onChange({ ...c, direccionCargaId: ev.target.value })}>
+          <option value="">Selecciona…</option>
+          {(dirs[c.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
+        </select>
+      </label>
+      <label className="campo"><span>Mercancía</span>
+        <input value={c.mercancia} onChange={(ev) => onChange({ ...c, mercancia: ev.target.value })}
+          placeholder="Ej. 22 tarimas de aguacate" />
+      </label>
+    </>
+  )
+}
+
 function ViajeForm({ viaje, usuario, onDone }) {
   const unidades = useUnidades()
   const tc = useTipoCambio()
@@ -303,6 +360,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const [rendMap, setRendMap] = useState({})
   const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
   const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven aparte
+  const [cargas, setCargas] = useState([cargaVacia()]) // solo alta -- puntos de carga no se agregan después de creado el viaje
   const [dirs, setDirs] = useState({}) // cache de direcciones por cliente
   const [movs, setMovs] = useState(viaje ? null : [])
   const [modalCambio, setModalCambio] = useState(false)
@@ -376,6 +434,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
 
   const guardar = async () => {
     const entregasValidas = entregas.filter((e) => e.clienteId && e.direccionEntregaId)
+    const cargasValidas = cargas.filter((c) => c.clienteId && c.direccionCargaId)
     if (!viaje) {
       if (entregasValidas.length === 0) { alert('Agrega al menos una entrega (cliente + dirección)'); return }
       if (!f.unidadId) { alert('Selecciona la unidad'); return }
@@ -408,6 +467,15 @@ function ViajeForm({ viaje, usuario, onDone }) {
             mercancia: e.mercancia,
           }
         })
+        const cargasJson = cargasValidas.map((c) => {
+          const dir = (dirs[c.clienteId] ?? []).find((d) => d.id === c.direccionCargaId)
+          return {
+            cliente_id: c.clienteId,
+            direccion_id: c.direccionCargaId,
+            direccion_snapshot: dir ? direccionTexto(dir) : '',
+            mercancia: c.mercancia,
+          }
+        })
         const { error } = await supabase.rpc('crear_viaje', {
           p_fecha: f.fecha, p_tramo_id: f.tramoId || null,
           p_origen: tramo?.origen ?? '', p_destino: tramo?.destino ?? '',
@@ -419,6 +487,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
           p_odometro_inicio: null, // lo anota el chofer al dar "Inicio de viaje" en Mis viajes
           p_operador_provisional: Boolean(operadorBase && f.operadorId !== operadorBase.id),
           p_entregas: entregasJson,
+          p_cargas: cargasJson,
         })
         if (error) throw error
       }
@@ -529,6 +598,33 @@ function ViajeForm({ viaje, usuario, onDone }) {
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.viaticosEntregados} onChange={set('viaticosEntregados')} />
         </label>
       </div>
+
+      {/* cargas: opcionales, solo en alta -- si el viaje no define puntos de carga, "Inicio de
+          viaje" en Mis viajes no queda bloqueado (compatibilidad con el modelo de un solo origen) */}
+      {!viaje && (
+        <>
+          <h3>Puntos de carga ({cargas.length})</h3>
+          {cargas.map((c, i) => (
+            <div key={i} className="tarjeta detalle">
+              <div className="tarjeta-top">
+                <strong>Carga {i + 1}</strong>
+                <button
+                  type="button" className="btn-borrar" aria-label="Eliminar punto de carga"
+                  disabled={cargas.length === 1}
+                  onClick={() => setCargas(cargas.filter((_, j) => j !== i))}
+                >🗑</button>
+              </div>
+              <CargaCampos
+                c={c} clientes={clientes} dirs={dirs} cargarDirs={cargarDirs}
+                onChange={(nueva) => setCargas(cargas.map((x, j) => (j === i ? nueva : x)))}
+              />
+            </div>
+          ))}
+          <button type="button" className="btn-secundario btn-bloque" onClick={() => setCargas([...cargas, cargaVacia()])}>
+            + Agregar punto de carga
+          </button>
+        </>
+      )}
 
       {/* entregas: en alta son filas locales que la RPC crea; en edición viven en Supabase */}
       {!viaje && (
@@ -913,7 +1009,9 @@ function MisViajes() {
           <div className="muted">Viáticos entregados: {dinero(v.viaticosEntregados, 'USD')}</div>
           {v.estatus === 'en_proceso' && (v.iniciadoEn
             ? <PanelViajeEnCurso viajeId={v.id} unidadPorDefecto={unidades.find((u) => u.id === v.unidadId)?.unidadLectura} inicioTexto={fmtTs(v.iniciadoEn)} />
-            : <BotonInicioViaje viajeId={v.id} unidadPorDefecto={unidades.find((u) => u.id === v.unidadId)?.unidadLectura} />)}
+            : v.cargasPendientes > 0
+              ? <CargasChofer viajeId={v.id} />
+              : <BotonInicioViaje viajeId={v.id} unidadPorDefecto={unidades.find((u) => u.id === v.unidadId)?.unidadLectura} />)}
         </div>
       ))}
     </div>
@@ -934,6 +1032,60 @@ function BotonInicioViaje({ viajeId, unidadPorDefecto }) {
       <button className="btn-primario" disabled={guardando} onClick={iniciar}>
         {guardando ? 'Guardando…' : 'Inicio de viaje'}
       </button>
+    </div>
+  )
+}
+
+// puntos de carga pendientes: el chofer los marca "recogido" antes de poder dar Inicio de viaje
+// (gate explícito -- ver v.cargasPendientes en MisViajes). Sin foto de evidencia (a diferencia
+// de entregas) ni lógica de "última carga cierra algo" -- solo bloquea BotonInicioViaje mientras
+// queden pendientes.
+function CargasChofer({ viajeId }) {
+  const [cargas, setCargas] = useState(null)
+  const [guardando, setGuardando] = useState('')
+
+  useEffect(() => {
+    const cargar = () => supabase.from('viaje_cargas').select(SELECT_CARGA).eq('viaje_id', viajeId)
+      .then(({ data, error }) => {
+        if (error) { console.error(error); return }
+        setCargas(data.map(mapCarga).sort((a, b) => (a.ordenSecuencia ?? 0) - (b.ordenSecuencia ?? 0)))
+      })
+    cargar()
+    const canal = supabase
+      .channel(`cargas-chofer-${viajeId}-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_cargas', filter: `viaje_id=eq.${viajeId}` }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [viajeId])
+
+  const recoger = async (c) => {
+    if (!confirm(`¿Marcar como recogida la carga de ${c.clienteNombre}?`)) return
+    setGuardando(c.id)
+    try { await marcarCargaRecogida(c.id) } catch (err) { alert('Error: ' + err.message) } finally { setGuardando('') }
+  }
+
+  if (!cargas?.length) return null
+  return (
+    <div className="linea">
+      <strong>Puntos de carga</strong>
+      <p className="muted tc-nota">Marca todos los puntos de carga como recogidos para poder dar "Inicio de viaje".</p>
+      {cargas.map((c) => (
+        <div key={c.id} className="tarjeta detalle">
+          <div className="tarjeta-top">
+            <strong>{c.ordenSecuencia}. {c.clienteNombre}</strong>
+            {c.estatus === 'recogida'
+              ? <span className="badge completado">Recogida</span>
+              : <span className="badge en_proceso">Pendiente</span>}
+          </div>
+          <div className="muted">{c.direccion}</div>
+          {c.mercancia && <div className="muted">{c.mercancia}</div>}
+          {c.estatus === 'pendiente' && (
+            <button className="btn-completar" disabled={guardando === c.id} onClick={() => recoger(c)}>
+              {guardando === c.id ? 'Guardando…' : 'Marcar como recogida'}
+            </button>
+          )}
+        </div>
+      ))}
     </div>
   )
 }
