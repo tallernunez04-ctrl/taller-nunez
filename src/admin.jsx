@@ -403,7 +403,7 @@ function DetalleUnidad() {
             )}
             {unidad.vin && <p><span className="muted">VIN:</span> {unidad.vin}</p>}
             <p><span className="muted">Lectura:</span> {LECTURA_LABEL[unidad.unidadLectura]}
-              {unidad.ultimaLectura != null && ` · última: ${unidad.ultimaLectura.toLocaleString()}`}</p>
+              {unidad.ultimaLectura != null && ` · última: ${unidad.ultimaLectura.toLocaleString()} ${unidad.unidadLectura === 'hrs' ? 'hrs' : 'km'}`}</p>
             <p><span className="muted">Total histórico:</span> <strong>{dinero(totalUSD, 'USD')}</strong></p>
           </div>
 
@@ -495,7 +495,7 @@ function exportarHistorial(unidad, wos, compras, totalUSD) {
           ['Modelo', unidad.modelo || ''],
           ['VIN', unidad.vin || ''],
           ['Unidad de lectura', unidad.unidadLectura],
-          ['Última lectura', unidad.ultimaLectura ?? ''],
+          ['Última lectura', unidad.ultimaLectura != null ? `${unidad.ultimaLectura} ${unidad.unidadLectura === 'hrs' ? 'hrs' : 'km'}` : ''],
           ['Total histórico (USD)', totalUSD],
         ],
       },
