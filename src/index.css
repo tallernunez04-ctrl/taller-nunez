@@ -333,7 +333,7 @@ h3 { margin: 1.25rem 0 0.6rem; }
 }
 .badge.en_proceso { background: var(--accent); color: #1A1A1A; }
 .badge.completado { background: #2E6B3E; color: #fff; }
-.badge.inactivo { background: var(--secundario); color: #fff; }
+.badge.inactivo { background: var(--muted); color: #fff; }
 .badge.alerta { background: #C77E1E; color: #fff; }
 .badge.vencido { background: var(--danger); color: #fff; }
 

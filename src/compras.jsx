@@ -15,19 +15,35 @@ export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
 // tc = pesos por 1 USD (config.tipo_cambio_usd). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))
 
-// km/mi que faltan para el próximo mantenimiento (null = sin ciclo configurado)
+// unidades (Km u horas de termo, según unidad.unidadLectura) que faltan para el próximo
+// mantenimiento (null = sin ciclo configurado o sin lectura aún)
 export const paraMantenimiento = (u) => {
   if (!u.mantenimientoCadaX || u.ultimaLectura == null) return null
-  return (Number(u.ultimoMantenimientoKm) || 0) + Number(u.mantenimientoCadaX) - u.ultimaLectura
+  return (Number(u.ultimoMantenimientoValor) || 0) + Number(u.mantenimientoCadaX) - u.ultimaLectura
 }
 
+// 'sin_configurar' (sin mantenimientoCadaX) es distinto de null (configurado pero sin lectura aún
+// para calcular) -- una unidad sin intervalo no debe mezclarse con las genuinamente vencidas.
 // próximo = dentro del último 10% del intervalo (ej. cada 10,000 km, avisa desde los últimos 1,000)
-export function BadgeMantenimiento({ unidad }) {
-  const restante = paraMantenimiento(unidad)
+export function estatusMantenimiento(u) {
+  if (!u.mantenimientoCadaX) return 'sin_configurar'
+  const restante = paraMantenimiento(u)
   if (restante === null) return null
-  const margen = Number(unidad.mantenimientoCadaX) * 0.1
-  if (restante <= 0) return <span className="badge vencido">Mantenimiento vencido</span>
-  if (restante <= margen) return <span className="badge alerta">Mantenimiento próximo, en {restante.toLocaleString()} {unidad.unidadLectura}</span>
+  const margen = Number(u.mantenimientoCadaX) * 0.1
+  if (restante <= 0) return 'vencido'
+  if (restante <= margen) return 'proximo'
+  return null
+}
+
+export function BadgeMantenimiento({ unidad }) {
+  const estatus = estatusMantenimiento(unidad)
+  if (estatus === 'sin_configurar') return <span className="badge inactivo">Mantenimiento sin configurar</span>
+  if (estatus === 'vencido') return <span className="badge vencido">Mantenimiento vencido</span>
+  if (estatus === 'proximo') {
+    const restante = paraMantenimiento(unidad)
+    const unidadRestante = unidad.unidadLectura === 'hrs' ? 'hrs' : 'km'
+    return <span className="badge alerta">Mantenimiento próximo, en {restante.toLocaleString()} {unidadRestante}</span>
+  }
   return null
 }
 
@@ -43,7 +59,7 @@ const mapUnidad = (u) => ({
   anio: u.anio,
   ultimaLectura: u.ultima_lectura,
   mantenimientoCadaX: u.mantenimiento_cada_x,
-  ultimoMantenimientoKm: u.ultimo_mantenimiento_km,
+  ultimoMantenimientoValor: u.ultimo_mantenimiento_valor,
   activo: u.activo,
 })
 
@@ -120,6 +136,7 @@ export const mapWO = (w) => ({
   piezasRequeridas: w.piezas_requeridas ?? [],
   notasMecanico: w.notas_mecanico ?? '',
   estatus: w.estatus,
+  origenMantenimientoProgramado: w.origen_mantenimiento_programado ?? false,
   creadoPor: w.perfiles?.email ?? '',
   createdAt: w.created_at,
   completadoAt: w.completado_at,
@@ -215,6 +232,16 @@ export const aKm = (valor, unidad) => {
   if (unidad === 'mi') return r2(n * MI_A_KM)
   if (unidad === 'km') return n
   return null
+}
+
+// inverso de aKm: de Km homologado a la unidad nativa de la unidad -- para precargar inputs que
+// se capturan en unidad nativa (ej. mantenimiento_cada_x/ultimo_mantenimiento_valor) pero se
+// guardan homologados a Km. 'hrs' no se homologa en ninguna dirección, se muestra tal cual (las
+// horas de termo de un reefer no son distancia).
+const kmAValor = (km, unidad) => {
+  if (km == null || km === '') return ''
+  if (unidad === 'mi') return r2(Number(km) / MI_A_KM)
+  return Number(km)
 }
 
 // captura un odómetro con selector Km/Millas y devuelve siempre el equivalente en Km al padre
@@ -757,7 +784,7 @@ function Unidades({ soloLectura }) {
                   <div className="tarjeta-top">
                     <strong>{u.numero}</strong>
                     <span className="muted">
-                      {u.ultimaLectura != null ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura}` : LECTURA_LABEL[u.unidadLectura]}
+                      {u.ultimaLectura != null ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura === 'hrs' ? 'hrs' : 'km'}` : LECTURA_LABEL[u.unidadLectura]}
                     </span>
                   </div>
                   {(u.marca || u.anio || u.modelo) && (
@@ -783,10 +810,17 @@ function UnidadForm({ unidad, onDone }) {
   const [f, setF] = useState(() => ({
     numero: unidad?.numero ?? '', tipo: unidad?.tipo ?? 'truck', unidadLectura: unidad?.unidadLectura ?? 'mi',
     marca: unidad?.marca ?? '', anio: unidad?.anio ?? '', modelo: unidad?.modelo ?? '', vin: unidad?.vin ?? '',
-    mantenimientoCadaX: unidad?.mantenimientoCadaX ?? '', ultimoMantenimientoKm: unidad?.ultimoMantenimientoKm ?? '',
+    // mantenimientoCadaX/ultimoMantenimientoValor se guardan homologados (Km para mi/km, valor
+    // directo para hrs -- horas de termo no son distancia) -- se precargan de vuelta en la unidad
+    // nativa de la unidad para que el input siga mostrando lo que el admin espera ver
+    mantenimientoCadaX: unidad ? kmAValor(unidad.mantenimientoCadaX, unidad.unidadLectura) : '',
+    ultimoMantenimientoValor: unidad ? kmAValor(unidad.ultimoMantenimientoValor, unidad.unidadLectura) : '',
   }))
   const [guardando, setGuardando] = useState(false)
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
+
+  // 'hrs' no se homologa (no es distancia); mi/km sí, para poder compararse contra ultimaLectura
+  const homologar = (valor) => (f.unidadLectura === 'hrs' ? Number(valor) || 0 : (aKm(valor, f.unidadLectura) ?? 0))
 
   const guardar = async () => {
     setGuardando(true)
@@ -795,8 +829,8 @@ function UnidadForm({ unidad, onDone }) {
         const { error } = await supabase.from('unidades').update({
           marca: f.marca, anio: f.anio === '' ? null : Number(f.anio), modelo: f.modelo, vin: f.vin,
           unidad_lectura: f.unidadLectura,
-          mantenimiento_cada_x: Number(f.mantenimientoCadaX) || 0,
-          ultimo_mantenimiento_km: Number(f.ultimoMantenimientoKm) || 0,
+          mantenimiento_cada_x: homologar(f.mantenimientoCadaX),
+          ultimo_mantenimiento_valor: homologar(f.ultimoMantenimientoValor),
         }).eq('id', unidad.id)
         if (error) throw error
       } else {
@@ -804,8 +838,8 @@ function UnidadForm({ unidad, onDone }) {
         if (!numero) { alert('Escribe el número de unidad'); return }
         const { error } = await supabase.from('unidades').insert({
           numero, tipo: f.tipo, unidad_lectura: f.unidadLectura,
-          mantenimiento_cada_x: Number(f.mantenimientoCadaX) || 0,
-          ultimo_mantenimiento_km: Number(f.ultimoMantenimientoKm) || 0,
+          mantenimiento_cada_x: homologar(f.mantenimientoCadaX),
+          ultimo_mantenimiento_valor: homologar(f.ultimoMantenimientoValor),
           marca: f.marca, anio: f.anio === '' ? null : Number(f.anio), modelo: f.modelo, vin: f.vin,
         })
         if (error) {
@@ -871,17 +905,17 @@ function UnidadForm({ unidad, onDone }) {
         <span>VIN / Serie</span>
         <input value={f.vin} onChange={set('vin')} />
       </label>
-      {f.tipo === 'truck' && (
+      {(f.tipo === 'truck' || f.tipo === 'reefer') && (
         <div className="fila-2">
           <label className="campo">
             <span>Mantenimiento cada ({f.unidadLectura})</span>
             <input type="number" inputMode="numeric" min="0" value={f.mantenimientoCadaX}
-              onChange={set('mantenimientoCadaX')} placeholder="Ej. 50000" />
+              onChange={set('mantenimientoCadaX')} placeholder={f.unidadLectura === 'hrs' ? 'Ej. 500' : 'Ej. 50000'} />
           </label>
           <label className="campo">
             <span>Último mantenimiento en ({f.unidadLectura})</span>
-            <input type="number" inputMode="numeric" min="0" value={f.ultimoMantenimientoKm}
-              onChange={set('ultimoMantenimientoKm')} />
+            <input type="number" inputMode="numeric" min="0" value={f.ultimoMantenimientoValor}
+              onChange={set('ultimoMantenimientoValor')} />
           </label>
         </div>
       )}

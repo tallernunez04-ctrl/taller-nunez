@@ -61,18 +61,23 @@ export default function Taller({ usuario, vista, setVista }) {
   )
 }
 
-function WOForm({ usuario, wo, onDone }) {
+// programado: { unidadId, unidadNumero, unidadLectura } cuando la WO se abre desde el panel de
+// Mantenimiento Preventivo (dispatch o taller) -- fija tipoServicio y origenMantenimientoProgramado,
+// que es lo único que dispara mantenimiento_preventivo/ultimo_mantenimiento_valor al completar
+// (ver guardar_work_order).
+export function WOForm({ usuario, wo, onDone, programado }) {
   const [unidades, setUnidades] = useState([])
   const [f, setF] = useState(() => wo
     ? { ...wo, piezasRequeridas: piezasLista(wo.piezasRequeridas).length ? piezasLista(wo.piezasRequeridas) : [''] }
     : {
       fecha: hoy(),
-      unidadId: '', unidadNumero: '',
-      lectura: { valor: '', unidad: '' },
+      unidadId: programado?.unidadId ?? '', unidadNumero: programado?.unidadNumero ?? '',
+      lectura: { valor: '', unidad: programado?.unidadLectura ?? '' },
       chofer: '',
       mecanico: usuario.nombre,
       tipoFalla: [],
-      tipoServicio: 'correctivo',
+      tipoServicio: programado ? 'preventivo' : 'correctivo',
+      origenMantenimientoProgramado: !!programado,
       diagnostico: '', piezasRequeridas: [''], notasMecanico: '',
       llantaAccion: '', llantaPosiciones: [''], llantaNotas: '',
     })
@@ -125,16 +130,17 @@ function WOForm({ usuario, wo, onDone }) {
         alert('Para el análisis de llantas hace falta el millaje/kilometraje de la WO'); return
       }
     }
-    if (completar && f.tipoServicio === 'preventivo' && f.lectura.unidad !== 'km') {
-      alert('Para completar un servicio preventivo hace falta el millaje/kilometraje de la WO'); return
+    if (completar && f.tipoServicio === 'preventivo' && !f.lectura.unidad) {
+      alert('Para completar un servicio preventivo hace falta el millaje/kilometraje/horómetro de la WO'); return
     }
     if (completar && !confirm('¿Confirmar que la reparación está completa? Esta acción no se puede deshacer.')) return
     setGuardando(true)
     try {
       // el folio WO-XXXX lo asigna la secuencia de Postgres al insertar, no hace falta contador propio.
       // guardar_work_order es atómico: WO + llantas + sincroniza unidades.ultima_lectura (nunca
-      // retrocede) + si se completa como preventivo, registra mantenimiento_preventivo y
-      // actualiza unidades.ultimo_mantenimiento_km -- ver migración mantenimiento_preventivo_fase1*.
+      // retrocede, Km u horas de termo según la unidad) + si se completa como preventivo, registra
+      // mantenimiento_preventivo y actualiza unidades.ultimo_mantenimiento_valor -- ver migración
+      // mantenimiento_preventivo_fase1* / reefer_horas_termo_ciclo_agnostico.
       const { error } = await supabase.rpc('guardar_work_order', {
         p_wo_id: wo?.id ?? null,
         p_fecha: f.fecha,
@@ -156,6 +162,7 @@ function WOForm({ usuario, wo, onDone }) {
         p_llanta_posiciones: llantasActivas ? posicionesLimpias : null,
         p_llanta_km_evento: llantasActivas ? kmEvento : null,
         p_llanta_notas: llantasActivas ? (f.llantaNotas || null) : null,
+        p_origen_mantenimiento_programado: f.origenMantenimientoProgramado,
       })
       if (error) throw error
       onDone()
@@ -230,6 +237,9 @@ function WOForm({ usuario, wo, onDone }) {
       </label>
       <div className="campo">
         <span>Tipo de servicio</span>
+        {f.origenMantenimientoProgramado ? (
+          <input value="Preventivo (servicio programado)" disabled />
+        ) : (
         <div className="chips">
           {TIPOS_SERVICIO.map(([id, label]) => (
             <button
@@ -241,6 +251,7 @@ function WOForm({ usuario, wo, onDone }) {
             </button>
           ))}
         </div>
+        )}
       </div>
       <div className="campo">
         <span>Tipo de falla</span>
@@ -347,9 +358,11 @@ function WOForm({ usuario, wo, onDone }) {
         <button className="btn-primario" disabled={guardando} onClick={() => guardar(false)}>
           {guardando ? 'Guardando…' : 'Guardar'}
         </button>
-        <button className="btn-completar" disabled={guardando} onClick={() => guardar(true)}>
-          Completar reparación
-        </button>
+        {usuario.rol !== 'dispatch' && (
+          <button className="btn-completar" disabled={guardando} onClick={() => guardar(true)}>
+            Completar reparación
+          </button>
+        )}
         <button className="btn-secundario" disabled={guardando} onClick={cancelar}>
           Cancelar
         </button>
