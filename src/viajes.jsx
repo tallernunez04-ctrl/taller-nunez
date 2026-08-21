@@ -556,7 +556,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
       )}
 
       <div className="totales">
-        <div><span className="muted">Diésel estimado ({km} km / {rendimiento || '—'} km/L mediana × ${precioLitro}/L)</span><span>{dinero(costoDieselUSD, 'USD')}</span></div>
+        <div><span className="muted">Diésel estimado ({km} km / {rendimiento || '—'} km/L mediana × ${precioLitro}/L)</span><span>{rendimiento ? dinero(costoDieselUSD, 'USD') : '— (sin datos)'}</span></div>
         <div><span className="muted">Pago al chofer (tabulador)</span><span>{dinero(pagoChofer, 'USD')}</span></div>
         <div className="total-grande"><span>COSTEO ESTIMADO</span><span>{dinero(costeoTotal, 'USD')}</span></div>
       </div>
