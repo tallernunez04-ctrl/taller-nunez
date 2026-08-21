@@ -125,9 +125,13 @@ export function WOForm({ usuario, wo, onDone, programado }) {
       if (f.llantaAccion !== 'rotacion' && posicionesLimpias.length === 0) {
         alert('Escribe al menos una posición (ej. "Del Izq") para el reemplazo/reparación'); return
       }
-      kmEvento = aKm(f.lectura.valor, f.lectura.unidad)
-      if (kmEvento == null) {
-        alert('Para el análisis de llantas hace falta el millaje/kilometraje de la WO'); return
+      // reefers (lectura en horas) no tienen km atribuible -- el evento se guarda sin km_evento,
+      // la fecha de captura (wo_llantas.created_at) es el dato válido para su análisis de llantas
+      if (f.lectura.unidad !== 'hrs') {
+        kmEvento = aKm(f.lectura.valor, f.lectura.unidad)
+        if (kmEvento == null) {
+          alert('Para el análisis de llantas hace falta el millaje/kilometraje de la WO'); return
+        }
       }
     }
     if (completar && f.tipoServicio === 'preventivo' && !f.lectura.unidad) {
@@ -313,7 +317,7 @@ export function WOForm({ usuario, wo, onDone, programado }) {
             <textarea value={f.llantaNotas} onChange={set('llantaNotas')} />
           </label>
           {!f.lectura.unidad && (
-            <p className="error">Selecciona la unidad para poder capturar el millaje/kilometraje de este evento.</p>
+            <p className="error">Selecciona la unidad para poder capturar el millaje/kilometraje/horómetro de este evento.</p>
           )}
         </div>
       )}

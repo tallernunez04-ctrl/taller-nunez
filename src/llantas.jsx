@@ -5,11 +5,18 @@ import { r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
 
 /* Dashboard de Llantas (pedido explícito del cliente: análisis estricto de gasto de llantas).
-   Sin identidad individual de llanta (decisión confirmada) -- la "vida" de una posición se mide
-   como Km recorridos desde su último reemplazo (vista v_llantas_ultimo_reemplazo), y el
-   intervalo de rotación como Km recorridos desde la última rotación de la unidad (vista
-   v_llantas_ultima_rotacion, evento a nivel unidad). Ambas vistas leen de wo_llantas, capturada
-   desde el formulario de WO en taller.jsx cuando se marca "Llantas" como tipo de falla. */
+   Sin identidad individual de llanta (decisión confirmada) -- la "vida" de una posición y el
+   intervalo de rotación (evento a nivel unidad) se miden con dos métricas, ambas de solo lectura
+   y sin alerta/umbral (Llantas no es un ciclo de mantenimiento preventivo):
+   - Trucks (unidad_lectura != 'hrs'): Km recorridos desde el evento es la métrica principal
+     (como siempre), días transcurridos se agrega como dato informativo adicional.
+   - Reefers (unidad_lectura = 'hrs'): no hay km atribuible (sin relación fija reefer<->truck),
+     así que días transcurridos es la ÚNICA métrica -- km_evento queda null en wo_llantas para
+     estos eventos (columna nullable desde 2026-08-21).
+   Ambas vistas (v_llantas_ultimo_reemplazo/v_llantas_ultima_rotacion) leen de wo_llantas,
+   capturada desde el formulario de WO en taller.jsx cuando se marca "Llantas" como tipo de falla. */
+
+const diasDesde = (fechaISO) => (fechaISO ? Math.floor((Date.now() - new Date(fechaISO).getTime()) / 86400000) : null)
 
 function useLlantasKPI() {
   const [reemplazos, setReemplazos] = useState(null)
@@ -48,33 +55,39 @@ export default function Llantas() {
   const filas = unidades
     .filter((u) => !fUnidad || u.id === fUnidad)
     .map((u) => {
+      const esHrs = u.unidadLectura === 'hrs'
       const rot = rotaciones?.find((r) => r.unidad_id === u.id)
       const posiciones = (reemplazos ?? [])
         .filter((r) => r.unidad_id === u.id)
         .map((r) => ({
           posicion: r.posicion,
           fecha: r.fecha_ultimo_reemplazo,
-          kmDesde: u.ultimaLectura != null ? r2(u.ultimaLectura - Number(r.km_ultimo_reemplazo)) : null,
+          diasDesde: diasDesde(r.fecha_ultimo_reemplazo),
+          kmDesde: !esHrs && u.ultimaLectura != null && r.km_ultimo_reemplazo != null
+            ? r2(u.ultimaLectura - Number(r.km_ultimo_reemplazo)) : null,
         }))
         .sort((a, b) => a.posicion.localeCompare(b.posicion))
       return {
         id: u.id,
         numero: u.numero,
-        kmDesdeRotacion: rot && u.ultimaLectura != null ? r2(u.ultimaLectura - Number(rot.km_ultima_rotacion)) : null,
+        esHrs,
+        diasDesdeRotacion: rot ? diasDesde(rot.fecha_ultima_rotacion) : null,
+        kmDesdeRotacion: !esHrs && rot && u.ultimaLectura != null && rot.km_ultima_rotacion != null
+          ? r2(u.ultimaLectura - Number(rot.km_ultima_rotacion)) : null,
         posiciones,
       }
     })
-    .filter((f) => f.posiciones.length > 0 || f.kmDesdeRotacion != null)
+    .filter((f) => f.posiciones.length > 0 || f.diasDesdeRotacion != null)
 
   const exportar = () => exportarXlsx({
     nombreArchivo: `Llantas_${hoy()}.xlsx`,
     hojas: [{
       nombre: 'Llantas',
       datos: [
-        ['Unidad', 'Posición', 'Km/llanta (desde reemplazo)', 'Fecha reemplazo', 'Km/rotación (desde última rotación)'],
+        ['Unidad', 'Posición', 'Km/llanta (desde reemplazo)', 'Días desde reemplazo', 'Fecha reemplazo', 'Km/rotación (desde última rotación)', 'Días desde rotación'],
         ...filas.flatMap((f) => (f.posiciones.length
-          ? f.posiciones.map((p) => [f.numero, p.posicion, p.kmDesde ?? '', p.fecha ?? '', f.kmDesdeRotacion ?? ''])
-          : [[f.numero, '—', '', '', f.kmDesdeRotacion ?? '']])),
+          ? f.posiciones.map((p) => [f.numero, p.posicion, p.kmDesde ?? '', p.diasDesde ?? '', p.fecha ?? '', f.kmDesdeRotacion ?? '', f.diasDesdeRotacion ?? ''])
+          : [[f.numero, '—', '', '', '', f.kmDesdeRotacion ?? '', f.diasDesdeRotacion ?? '']])),
       ],
     }],
   })
@@ -92,19 +105,31 @@ export default function Llantas() {
           <div className="tarjeta-top">
             <strong>Unidad {f.numero}</strong>
             <span className="muted">
-              {f.kmDesdeRotacion != null ? `Km/rotación: ${f.kmDesdeRotacion.toLocaleString()} km` : 'Sin rotación registrada'}
+              {f.diasDesdeRotacion == null ? 'Sin rotación registrada' : (
+                f.esHrs
+                  ? `Rotación: ${f.diasDesdeRotacion.toLocaleString()} días`
+                  : `Km/rotación: ${f.kmDesdeRotacion != null ? f.kmDesdeRotacion.toLocaleString() : '—'} km · ${f.diasDesdeRotacion.toLocaleString()} días`
+              )}
             </span>
           </div>
           {f.posiciones.length === 0 && <p className="muted">Sin reemplazos registrados.</p>}
           {f.posiciones.length > 0 && (
             <div className="tabla-scroll">
               <table>
-                <thead><tr><th>Posición</th><th className="num">Km/llanta</th><th>Desde</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>Posición</th>
+                    {!f.esHrs && <th className="num">Km/llanta</th>}
+                    <th className="num">Días</th>
+                    <th>Desde</th>
+                  </tr>
+                </thead>
                 <tbody>
                   {f.posiciones.map((p) => (
                     <tr key={p.posicion}>
                       <td>{p.posicion}</td>
-                      <td className="num">{p.kmDesde != null ? `${p.kmDesde.toLocaleString()} km` : '—'}</td>
+                      {!f.esHrs && <td className="num">{p.kmDesde != null ? `${p.kmDesde.toLocaleString()} km` : '—'}</td>}
+                      <td className="num">{p.diasDesde != null ? `${p.diasDesde.toLocaleString()} días` : '—'}</td>
                       <td className="muted">{p.fecha ? new Date(p.fecha).toLocaleDateString('es-MX') : '—'}</td>
                     </tr>
                   ))}
