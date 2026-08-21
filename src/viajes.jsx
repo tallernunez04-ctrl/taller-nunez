@@ -309,10 +309,13 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const [odometroFin, setOdometroFin] = useState('')
   const [guardando, setGuardando] = useState(false)
 
-  // mediana de rendimiento por unidad -- ya no vive en el doc de la unidad (ver diesel.jsx)
+  // mediana de rendimiento y de precio/litro por unidad -- ya no vive en el doc de la unidad (ver diesel.jsx)
   useEffect(() => {
-    supabase.from('v_rendimiento_unidades').select('unidad_id, rendimiento_mediana').then(({ data, error }) => {
-      if (!error) setRendMap(Object.fromEntries(data.map((r) => [r.unidad_id, Number(r.rendimiento_mediana)])))
+    supabase.from('v_rendimiento_unidades').select('unidad_id, rendimiento_mediana, precio_litro_mediana').then(({ data, error }) => {
+      if (!error) setRendMap(Object.fromEntries(data.map((r) => [r.unidad_id, {
+        rendimiento: Number(r.rendimiento_mediana),
+        precioLitro: r.precio_litro_mediana != null ? Number(r.precio_litro_mediana) : null,
+      }])))
     })
   }, [])
 
@@ -360,8 +363,11 @@ function ViajeForm({ viaje, usuario, onDone }) {
   // el km ya no se captura a mano aquí -- lo anota el chofer (Km inicial/final) en Mis viajes,
   // así que antes de que el viaje arranque el estimado de diésel simplemente es $0.
   const km = viaje?.kmTotales ?? 0
-  const rendimiento = rendMap[camionActualId] ?? 0
-  const precioLitro = precioDieselLitro || 0
+  const rendUnidad = rendMap[camionActualId]
+  const rendimiento = rendUnidad?.rendimiento ?? 0
+  // precio real pagado por esta unidad (mediana de sus últimas cargas) si ya existe -- si no,
+  // cae al valor fijo de config (Dashboard) como estimado genérico
+  const precioLitro = rendUnidad?.precioLitro || precioDieselLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
   const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
   const pagoChofer = tramo?.pagoChofer || 0
