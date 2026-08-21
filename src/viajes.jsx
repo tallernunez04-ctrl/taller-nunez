@@ -199,6 +199,7 @@ export async function marcarEntregada(entregaId, evidenciaPath) {
 export default function Viajes({ usuario, vista }) {
   if (vista === 'mis-viajes') return <MisViajes />
   if (vista === 'cobranza') return <Cobranza />
+  if (vista === 'kmh-chofer') return <KmPorChofer />
   return <ListaViajes usuario={usuario} />
 }
 
@@ -1212,6 +1213,64 @@ function CobranzaDetalle({ viaje, onVolver }) {
       <div className="acciones">
         <button className="btn-secundario" onClick={onVolver}>Volver</button>
       </div>
+    </div>
+  )
+}
+
+/* KPI Km/hora por chofer -- agrupa por segmento de viaje_movimientos (no por viaje completo),
+   así un cambio de custodia a media ruta le atribuye a cada chofer exactamente su propio tramo.
+   Sin filtro de atípicos por ahora (ver v_kmh_por_chofer): con cero viajes reales usando el
+   flujo de Km inicial/final todavía, es prematuro definir un umbral -- se revisita cuando haya
+   datos reales que mostrar el patrón. */
+function KmPorChofer() {
+  const operadores = useOperadores() ?? []
+  const [filas, setFilas] = useState(null)
+
+  useEffect(() => {
+    const cargar = () => supabase.from('v_kmh_por_chofer').select('*').then(({ data, error }) => {
+      if (!error) setFilas(data)
+      else console.error(error)
+    })
+    cargar()
+    const canal = supabase
+      .channel(`kmh-chofer-${crypto.randomUUID()}`)
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'viaje_movimientos' }, cargar)
+      .subscribe()
+    return () => supabase.removeChannel(canal)
+  }, [])
+
+  const nombreChofer = (id) => operadores.find((o) => o.id === id)?.nombre ?? '—'
+  const ordenadas = (filas ?? [])
+    .filter((f) => f.km_por_hora != null)
+    .sort((a, b) => Number(b.km_por_hora) - Number(a.km_por_hora))
+
+  return (
+    <div>
+      <h2>Km/hora por chofer</h2>
+      {filas === null && <p className="muted">Cargando…</p>}
+      {filas !== null && ordenadas.length === 0 && (
+        <p className="muted vacio">Sin datos suficientes todavía.<br />Se calcula con los tramos de viaje que ya tienen Inicio de Viaje + Km inicial + Km final capturados.</p>
+      )}
+      {ordenadas.length > 0 && (
+        <div className="tabla-scroll">
+          <table>
+            <thead>
+              <tr><th>Chofer</th><th className="num">Km/hora</th><th className="num">Km totales</th><th className="num">Horas totales</th><th className="num">Tramos</th></tr>
+            </thead>
+            <tbody>
+              {ordenadas.map((f) => (
+                <tr key={f.chofer_id}>
+                  <td>{nombreChofer(f.chofer_id)}</td>
+                  <td className="num">{Number(f.km_por_hora).toLocaleString()} km/h</td>
+                  <td className="num">{Number(f.km_totales).toLocaleString()} km</td>
+                  <td className="num">{Number(f.horas_totales).toLocaleString()} h</td>
+                  <td className="num">{f.segmentos}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

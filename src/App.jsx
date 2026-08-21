@@ -37,6 +37,7 @@ const NAV = {
   dispatch: [
     { id: 'viajes', label: 'Viajes', icono: '🚚', mod: 'viajes' },
     { id: 'cobranza', label: 'Por cobrar', icono: '💰', mod: 'viajes' },
+    { id: 'kmh-chofer', label: 'Km/hora', icono: '⏱️', mod: 'viajes' },
     { id: 'unidades', label: 'Unidades', icono: '🚛', mod: 'compras' },
     { id: 'gasolineras', label: 'Gasolineras', icono: '⛽', mod: 'catalogos' },
     { id: 'mantenimiento-preventivo', label: 'Mant. Preventivo', icono: '🛠️', mod: 'mantenimiento' },
