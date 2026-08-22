@@ -224,7 +224,7 @@ export async function marcarCargaRecogida(cargaId) {
 
 export default function Viajes({ usuario, vista }) {
   if (vista === 'mis-viajes') return <MisViajes />
-  if (vista === 'cobranza') return <Cobranza />
+  if (vista === 'cobranza') return <Cobranza usuario={usuario} />
   if (vista === 'kmh-chofer') return <KmPorChofer />
   return <ListaViajes usuario={usuario} />
 }
@@ -270,7 +270,8 @@ function ListaViajes({ usuario }) {
           <div className="muted">{v.fecha} · {v.clienteNombre} · Unidad <strong>{v.unidadNumero}</strong></div>
           <div className="muted">{v.origen} → {v.destino} · {v.operadorNombre}{v.operadorProvisional ? ' (provisional)' : ''}</div>
           <div className="muted">
-            Ingreso {dinero(v.precio, 'USD')} · Costeo est. {dinero(v.costeoEstimado?.total, 'USD')}
+            {usuario?.rol === 'admin' && `Ingreso ${dinero(v.precio, 'USD')} · `}
+            Costeo est. {dinero(v.costeoEstimado?.total, 'USD')}
             {v.entregasPendientes > 0 && ` · ${v.entregasPendientes} entrega(s) pendiente(s)`}
           </div>
         </button>
@@ -1184,13 +1185,14 @@ function EntregasChofer({ viajeId, kmFinalKm }) {
 
 /* ---------- Cobranza / Cuentas por Cobrar (admin) ---------- */
 
-function Cobranza() {
+function Cobranza({ usuario }) {
+  const esAdmin = usuario?.rol === 'admin'
   const viajes = useViajes()
   const [detalle, setDetalle] = useState(null)
 
   if (detalle) {
     const v = (viajes ?? []).find((x) => x.id === detalle.id) ?? detalle
-    return <CobranzaDetalle viaje={v} onVolver={() => setDetalle(null)} />
+    return <CobranzaDetalle viaje={v} usuario={usuario} onVolver={() => setDetalle(null)} />
   }
 
   const terminados = (viajes ?? []).filter((v) => v.estatus !== 'en_proceso')
@@ -1212,7 +1214,7 @@ function Cobranza() {
     <button className="tarjeta" onClick={() => setDetalle(v)}>
       <div className="tarjeta-top">
         <strong>{v.folio} · {v.clienteNombre}</strong>
-        <strong>{dinero(v.precio, 'USD')}</strong>
+        {esAdmin && <strong>{dinero(v.precio, 'USD')}</strong>}
       </div>
       <div className="muted">{v.fecha} · {v.origen} → {v.destino}</div>
       {extra}
@@ -1226,7 +1228,7 @@ function Cobranza() {
 
       <div className="kpis">
         <div className="kpi">Por facturar<strong>{porFacturar.length}</strong></div>
-        <div className="kpi">Por cobrar<strong>{dinero(totalPorCobrar, 'USD')}</strong></div>
+        {esAdmin && <div className="kpi">Por cobrar<strong>{dinero(totalPorCobrar, 'USD')}</strong></div>}
       </div>
 
       <h3>Por facturar ({porFacturar.length})</h3>
@@ -1243,18 +1245,35 @@ function Cobranza() {
   )
 }
 
-function CobranzaDetalle({ viaje, onVolver }) {
+function CobranzaDetalle({ viaje, usuario, onVolver }) {
   const clientes = useClientes() ?? []
   const [fechaFactura, setFechaFactura] = useState(viaje.cobranza?.fechaFactura || hoy())
   const [pdf, setPdf] = useState(null)
   const [xml, setXml] = useState(null)
   const [comprobante, setComprobante] = useState(null)
+  const [precio, setPrecio] = useState(viaje.precio ?? '')
   const [guardando, setGuardando] = useState(false)
+  const [guardandoPrecio, setGuardandoPrecio] = useState(false)
 
   // viaje puede tener varios clientes (multi-drop); el crédito se calcula sobre el primero
   const cliente = clientes.find((c) => c.id === viaje.clientesIds?.[0])
   const cobranza = viaje.cobranza ?? {}
   const facturado = Boolean(cobranza.fechaFactura)
+
+  // el ingreso del viaje (lo que se le cobra al cliente) lo captura admin aquí -- dispatch, al
+  // dar de alta el viaje, solo anota viáticos y tabulador porque el precio varía por cliente
+  const guardarPrecio = async () => {
+    setGuardandoPrecio(true)
+    try {
+      const { error } = await supabase.from('viajes').update({ precio: Number(precio) || 0 }).eq('id', viaje.id)
+      if (error) throw error
+    } catch (e) {
+      console.error(e)
+      alert('Error: ' + e.message)
+    } finally {
+      setGuardandoPrecio(false)
+    }
+  }
 
   const facturar = async () => {
     if (!fechaFactura) { alert('Escribe la fecha de factura'); return }
@@ -1318,7 +1337,19 @@ function CobranzaDetalle({ viaje, onVolver }) {
       <div className="tarjeta detalle">
         <p><span className="muted">Cliente:</span> {viaje.clienteNombre} ({cliente?.diasCredito ?? 0} días de crédito)</p>
         <p><span className="muted">Ruta:</span> {viaje.origen} → {viaje.destino} · {viaje.fecha}</p>
-        <p><span className="muted">Ingreso:</span> <strong>{dinero(viaje.precio, 'USD')}</strong></p>
+        {usuario?.rol === 'admin' && (
+          <label className="campo"><span>Ingreso del viaje (USD)</span>
+            <div className="fila-2">
+              <input
+                type="number" inputMode="decimal" min="0" step="0.01"
+                value={precio} onChange={(e) => setPrecio(e.target.value)}
+              />
+              <button type="button" className="btn-secundario" disabled={guardandoPrecio} onClick={guardarPrecio}>
+                {guardandoPrecio ? 'Guardando…' : 'Guardar ingreso'}
+              </button>
+            </div>
+          </label>
+        )}
         {facturado && <p><span className="muted">Facturado:</span> {cobranza.fechaFactura} · vence {cobranza.fechaVence}</p>}
         {cobranza.facturaURL && <p><a href={cobranza.facturaURL} target="_blank" rel="noreferrer">Ver factura PDF</a></p>}
         {cobranza.xmlURL && <p><a href={cobranza.xmlURL} target="_blank" rel="noreferrer">Descargar XML</a></p>}
