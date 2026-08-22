@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { BadgeMantenimiento, useUnidades, SelectorUnidad, CampoOdometro, useTabla } from './compras'
+import { BadgeMantenimiento, useUnidades, SelectorUnidad, CampoOdometro, useTabla, BarraAcciones } from './compras'
 import { useOperadores, useEstacionesGasolinera, estacionTexto } from './catalogos'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -181,6 +181,7 @@ function CargaDiesel({ usuario }) {
 
   return (
     <div>
+      <BarraAcciones onGuardar={guardar} guardando={guardando} guardarLabel="Registrar carga" />
       <h2>Carga de diésel</h2>
       <SelectorUnidad
         unidades={unidades.filter((u) => u.tipo === 'truck')}
@@ -265,12 +266,6 @@ function CargaDiesel({ usuario }) {
       <label className="campo"><span>Notas (opcional)</span>
         <textarea value={f.notas} onChange={set('notas')} />
       </label>
-
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Registrar carga'}
-        </button>
-      </div>
 
       <h3>Cargas recientes</h3>
       {cargas === null && <p className="muted">Cargando…</p>}

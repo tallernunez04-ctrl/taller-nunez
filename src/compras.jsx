@@ -189,10 +189,12 @@ export const mapCompra = (c) => ({
 // barra de acciones fija arriba del formulario (patrón ERP: Guardar/Atrás siempre visibles,
 // sin tener que bajar al final de un formulario largo) -- `extra` recibe botones adicionales
 // específicos del formulario (ej. "Terminar viaje"), se renderizan entre Atrás y Guardar
-export function BarraAcciones({ onAtras, atrasLabel = 'Atrás', onGuardar, guardando, guardarLabel = 'Guardar', guardarDisabled, extra }) {
+export function BarraAcciones({ onAtras, atrasLabel = 'Atrás', onGuardar, guardando, guardarLabel = 'Guardar', guardarDisabled, extra, className }) {
   return (
-    <div className="barra-acciones">
-      <button type="button" className="btn-secundario" disabled={guardando} onClick={onAtras}>← {atrasLabel}</button>
+    <div className={className ? `barra-acciones ${className}` : 'barra-acciones'}>
+      {onAtras
+        ? <button type="button" className="btn-secundario" disabled={guardando} onClick={onAtras}>← {atrasLabel}</button>
+        : <span />}
       {extra}
       {onGuardar && (
         <button type="button" className="btn-primario" disabled={guardando || guardarDisabled} onClick={onGuardar}>
@@ -378,6 +380,10 @@ function WODetalle({ usuario, wo, onVolver }) {
 
   return (
     <div>
+      <BarraAcciones
+        onAtras={onVolver}
+        extra={<button type="button" className="btn-primario" onClick={() => setComprando(true)}>Registrar compra para esta WO</button>}
+      />
       <div className="tarjeta-top">
         <h2>{wo.wo}</h2>
         <span className={'badge ' + wo.estatus}>{ESTATUS[wo.estatus]}</span>
@@ -420,12 +426,6 @@ function WODetalle({ usuario, wo, onVolver }) {
         <p className="total-detalle">Total: {dinero(totalUSD, 'USD')}</p>
       )}
 
-      <div className="acciones">
-        <button className="btn-primario" onClick={() => setComprando(true)}>
-          Registrar compra para esta WO
-        </button>
-        <button className="btn-secundario" onClick={onVolver}>Volver</button>
-      </div>
     </div>
   )
 }
@@ -590,6 +590,7 @@ function CompraForm({ usuario, wo, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarDisabled={!tc} guardarLabel="Guardar compra" />
       <h2>{wo ? `Compra para ${wo.wo}` : 'Nueva compra directa'}</h2>
 
       {wo ? (
@@ -761,12 +762,6 @@ function CompraForm({ usuario, wo, onDone }) {
         <p className="muted tc-nota">Cargando tipo de cambio…</p>
       )}
 
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando || !tc} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar compra'}
-        </button>
-        {onDone && <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>}
-      </div>
     </div>
   )
 }
@@ -875,6 +870,7 @@ function UnidadForm({ unidad, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel={unidad ? 'Guardar cambios' : 'Guardar unidad'} />
       <h2>{unidad ? `Unidad ${unidad.numero}` : 'Agregar unidad'}</h2>
       {!unidad && (
         <>
@@ -936,12 +932,6 @@ function UnidadForm({ unidad, onDone }) {
           </label>
         </div>
       )}
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : (unidad ? 'Guardar cambios' : 'Guardar unidad')}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-      </div>
     </div>
   )
 }

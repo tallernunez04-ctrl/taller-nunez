@@ -3,7 +3,7 @@ import { supabase } from './lib/supabaseClient'
 import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
 import {
   ESTATUS, mapCompra, mapWO, METODOS, SELECT_COMPRA, SELECT_WO, SelectorUnidad,
-  useTabla, useUnidades, useTipoCambio, usePrecioDiesel,
+  useTabla, useUnidades, useTipoCambio, usePrecioDiesel, BarraAcciones,
 } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -598,6 +598,7 @@ function UsuarioForm({ existente, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} />
       <h2>{existente ? existente.email : 'Agregar usuario'}</h2>
       {!existente && (
         <label className="campo"><span>Correo</span>
@@ -622,12 +623,6 @@ function UsuarioForm({ existente, onDone }) {
           <span style={{ margin: 0 }}>Activo (puede iniciar sesión)</span>
         </label>
       )}
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar'}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-      </div>
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
-import { mapWO, SELECT_WO, useTabla, aKm, CampoOdometro } from './compras'
+import { mapWO, SELECT_WO, useTabla, aKm, CampoOdometro, BarraAcciones } from './compras'
 import { hoy } from './utils/format'
 
 export const FALLAS = [
@@ -184,6 +184,16 @@ export function WOForm({ usuario, wo, onDone, programado }) {
 
   return (
     <div>
+      <BarraAcciones
+        onAtras={cancelar}
+        onGuardar={() => guardar(false)}
+        guardando={guardando}
+        extra={usuario.rol !== 'dispatch' && (
+          <button type="button" className="btn-completar" disabled={guardando} onClick={() => guardar(true)}>
+            Completar reparación
+          </button>
+        )}
+      />
       <h2>{wo ? `Editar ${wo.wo}` : 'Nueva WO'}</h2>
       <label className="campo">
         <span>WO</span>
@@ -358,19 +368,6 @@ export function WOForm({ usuario, wo, onDone, programado }) {
         <span>Estatus</span>
         <input value="En proceso" disabled />
       </label>
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={() => guardar(false)}>
-          {guardando ? 'Guardando…' : 'Guardar'}
-        </button>
-        {usuario.rol !== 'dispatch' && (
-          <button className="btn-completar" disabled={guardando} onClick={() => guardar(true)}>
-            Completar reparación
-          </button>
-        )}
-        <button className="btn-secundario" disabled={guardando} onClick={cancelar}>
-          Cancelar
-        </button>
-      </div>
     </div>
   )
 }

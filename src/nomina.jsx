@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { subirArchivo, supabase } from './lib/supabaseClient'
-import { mapWO, SELECT_WO, useTabla } from './compras'
+import { mapWO, SELECT_WO, useTabla, BarraAcciones } from './compras'
 import { useOperadores } from './catalogos'
 import { mapViaje, SELECT_VIAJE } from './viajes'
 import { dinero, r2, hoy } from './utils/format'
@@ -103,6 +103,7 @@ function Empleados() {
   if (f) {
     return (
       <div>
+        <BarraAcciones onAtras={() => setF(null)} onGuardar={guardar} />
         <h2>{f.id ? f.nombre : 'Nuevo empleado'}</h2>
         <p className="muted">Los choferes no van aquí: se pagan por viaje desde el catálogo de Operadores.</p>
         <label className="campo"><span>Nombre</span>
@@ -134,10 +135,6 @@ function Empleados() {
             onChange={(e) => setF({ ...f, activo: e.target.checked })} />
           <span style={{ margin: 0 }}>Activo</span>
         </label>
-        <div className="acciones">
-          <button className="btn-primario" onClick={guardar}>Guardar</button>
-          <button className="btn-secundario" onClick={() => setF(null)}>Cancelar</button>
-        </div>
       </div>
     )
   }
@@ -313,6 +310,14 @@ function NuevoCorte({ onDone }) {
 
   return (
     <div>
+      <BarraAcciones
+        onAtras={onDone}
+        extra={preview !== null && preview.length > 0
+          ? <button type="button" className="btn-completar" disabled={guardando} onClick={guardar}>
+              {guardando ? 'Guardando…' : 'Guardar corte (calculada)'}
+            </button>
+          : <button type="button" className="btn-primario" onClick={calcular}>Calcular nómina</button>}
+      />
       <h2>Nuevo corte de nómina</h2>
       <label className="campo"><span>Periodicidad</span>
         <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
@@ -328,11 +333,6 @@ function NuevoCorte({ onDone }) {
           <input type="date" value={al} onChange={(e) => setAl(e.target.value)} />
         </label>
       </div>
-      <div className="acciones">
-        <button className="btn-primario" onClick={calcular}>Calcular nómina</button>
-        <button className="btn-secundario" onClick={onDone}>Cancelar</button>
-      </div>
-
       {preview !== null && (
         <>
           <h3>Previsualización</h3>
@@ -364,11 +364,6 @@ function NuevoCorte({ onDone }) {
           {preview.length > 0 && (
             <>
               <p className="total-detalle">Total del corte: {dinero(total, 'USD')}</p>
-              <div className="acciones">
-                <button className="btn-completar" disabled={guardando} onClick={guardar}>
-                  {guardando ? 'Guardando…' : 'Guardar corte (calculada)'}
-                </button>
-              </div>
             </>
           )}
         </>
@@ -429,6 +424,19 @@ function CorteDetalle({ nomina, onVolver }) {
 
   return (
     <div>
+      <BarraAcciones
+        className="no-imprimir"
+        onAtras={onVolver}
+        extra={<>
+          {nomina.estatus !== 'pagada' && (
+            <button type="button" className="btn-completar" disabled={guardando} onClick={avanzar}>
+              {nomina.estatus === 'calculada' ? 'Aprobar nómina' : 'Marcar como pagada'}
+            </button>
+          )}
+          <button type="button" className="btn-secundario" onClick={exportar}>Descargar Excel</button>
+          <button type="button" className="btn-secundario" onClick={() => window.print()}>Imprimir recibos</button>
+        </>}
+      />
       <div className="tarjeta-top">
         <h2>Nómina {nomina.periodo.del} → {nomina.periodo.al}</h2>
         <span className={'badge ' + (nomina.estatus === 'pagada' ? 'completado' : 'en_proceso')}>{ESTADO_NOMINA[nomina.estatus]}</span>
@@ -468,17 +476,6 @@ function CorteDetalle({ nomina, onVolver }) {
       ))}
 
       <p className="total-detalle">Total: {dinero(nomina.totalGeneral, 'USD')}</p>
-
-      <div className="acciones no-imprimir">
-        {nomina.estatus !== 'pagada' && (
-          <button className="btn-completar" disabled={guardando} onClick={avanzar}>
-            {nomina.estatus === 'calculada' ? 'Aprobar nómina' : 'Marcar como pagada'}
-          </button>
-        )}
-        <button className="btn-secundario" onClick={exportar}>Descargar Excel</button>
-        <button className="btn-secundario" onClick={() => window.print()}>Imprimir recibos</button>
-        <button className="btn-secundario" onClick={onVolver}>Volver</button>
-      </div>
     </div>
   )
 }

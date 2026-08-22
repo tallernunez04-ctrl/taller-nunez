@@ -1301,6 +1301,19 @@ function CobranzaDetalle({ viaje, onVolver }) {
 
   return (
     <div>
+      <BarraAcciones
+        onAtras={onVolver}
+        extra={!cobranza.pagado && (
+          <>
+            <button type="button" className="btn-primario" disabled={guardando} onClick={facturar}>
+              {guardando ? 'Guardando…' : (facturado ? 'Actualizar factura' : 'Registrar factura')}
+            </button>
+            {facturado && (
+              <button type="button" className="btn-completar" disabled={guardando} onClick={marcarPagado}>Marcar como pagado</button>
+            )}
+          </>
+        )}
+      />
       <h2>Cobranza {viaje.folio}</h2>
       <div className="tarjeta detalle">
         <p><span className="muted">Cliente:</span> {viaje.clienteNombre} ({cliente?.diasCredito ?? 0} días de crédito)</p>
@@ -1331,31 +1344,16 @@ function CobranzaDetalle({ viaje, onVolver }) {
               <input type="file" accept=".xml" onChange={(e) => setXml(e.target.files[0] ?? null)} />
             </label>
           </div>
-          <div className="acciones">
-            <button className="btn-primario" disabled={guardando} onClick={facturar}>
-              {guardando ? 'Guardando…' : (facturado ? 'Actualizar factura' : 'Registrar factura')}
-            </button>
-          </div>
-
           {facturado && (
             <>
               <h3>Registrar pago</h3>
               <label className="campo"><span>Comprobante bancario</span>
                 <input type="file" accept=".pdf,image/*" onChange={(e) => setComprobante(e.target.files[0] ?? null)} />
               </label>
-              <div className="acciones">
-                <button className="btn-completar" disabled={guardando} onClick={marcarPagado}>
-                  Marcar como pagado
-                </button>
-              </div>
             </>
           )}
         </>
       )}
-
-      <div className="acciones">
-        <button className="btn-secundario" onClick={onVolver}>Volver</button>
-      </div>
     </div>
   )
 }

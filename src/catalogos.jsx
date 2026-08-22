@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
-import { useTabla, useUnidades } from './compras'
+import { useTabla, useUnidades, BarraAcciones } from './compras'
 
 /* Catálogos del ERP: Operadores, Clientes (+direcciones), Proveedores y Tabulador.
    Todos siguen el patrón lista-tarjetas + formulario de Unidades (compras.jsx).
@@ -225,6 +225,7 @@ function OperadorForm({ operador, unidades, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar operador" />
       <h2>{operador ? operador.nombre : 'Nuevo operador'}</h2>
       <label className="campo"><span>Nombre completo</span>
         <input value={f.nombre} onChange={set('nombre')} />
@@ -318,12 +319,6 @@ function OperadorForm({ operador, unidades, onDone }) {
         <span style={{ margin: 0 }}>Activo</span>
       </label>
 
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar operador'}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-      </div>
     </div>
   )
 }
@@ -423,6 +418,7 @@ function ClienteForm({ cliente, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar cliente" />
       <h2>{cliente ? cliente.razonSocial : 'Nuevo cliente'}</h2>
       <label className="campo"><span>Razón social</span>
         <input value={f.razonSocial} onChange={set('razonSocial')} />
@@ -495,13 +491,6 @@ function ClienteForm({ cliente, onDone }) {
         </>
       )}
       {!cliente && <p className="muted">Guarda el cliente para poder agregar direcciones.</p>}
-
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar cliente'}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-      </div>
     </div>
   )
 }
@@ -573,6 +562,7 @@ function ProveedorForm({ proveedor, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar proveedor" />
       <h2>{proveedor ? proveedor.razonSocial : 'Nuevo proveedor'}</h2>
       <label className="campo"><span>Razón social</span>
         <input value={f.razonSocial} onChange={set('razonSocial')} />
@@ -596,12 +586,6 @@ function ProveedorForm({ proveedor, onDone }) {
         <label className="campo"><span>Cuenta</span>
           <input value={f.banco.cuenta} onChange={setBanco('cuenta')} inputMode="numeric" />
         </label>
-      </div>
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar proveedor'}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
       </div>
     </div>
   )
@@ -786,6 +770,7 @@ function GasolineraForm({ gasolinera, onDone }) {
 
   return (
     <div>
+      <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar gasolinera" />
       <h2>{gasolinera ? gasolinera.razonSocial : 'Nueva gasolinera'}</h2>
       <label className="campo"><span>Razón social</span>
         <input value={f.razonSocial} onChange={set('razonSocial')} />
@@ -828,13 +813,6 @@ function GasolineraForm({ gasolinera, onDone }) {
         </>
       )}
       {!gasolinera && <p className="muted">Guarda la gasolinera para poder agregar estaciones.</p>}
-
-      <div className="acciones">
-        <button className="btn-primario" disabled={guardando} onClick={guardar}>
-          {guardando ? 'Guardando…' : 'Guardar gasolinera'}
-        </button>
-        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
-      </div>
     </div>
   )
 }
