@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from './lib/supabaseClient'
 import { mapWO, SELECT_WO, useTabla, aKm, CampoOdometro, BarraAcciones } from './compras'
+import { useOperadores } from './catalogos'
 import { hoy } from './utils/format'
 
 export const FALLAS = [
@@ -67,6 +68,7 @@ export default function Taller({ usuario, vista, setVista }) {
 // (ver guardar_work_order).
 export function WOForm({ usuario, wo, onDone, programado }) {
   const [unidades, setUnidades] = useState([])
+  const operadores = useOperadores() ?? []
   const [f, setF] = useState(() => wo
     ? { ...wo, piezasRequeridas: piezasLista(wo.piezasRequeridas).length ? piezasLista(wo.piezasRequeridas) : [''] }
     : {
@@ -100,11 +102,15 @@ export function WOForm({ usuario, wo, onDone, programado }) {
 
   const elegirUnidad = (e) => {
     const u = unidades.find((x) => x.id === e.target.value)
+    // al elegir unidad se propone su chofer de base (mismo criterio que Viajes); el mecánico
+    // puede corregirlo a mano porque es texto libre, no siempre coincide con el catálogo
+    const base = operadores.find((o) => o.unidadBaseId === u?.id)
     setF({
       ...f,
       unidadId: u?.id ?? '',
       unidadNumero: u?.numero ?? '',
       lectura: { valor: f.lectura.valor, unidad: u?.unidadLectura ?? '' },
+      chofer: base?.nombre ?? f.chofer,
     })
   }
 
