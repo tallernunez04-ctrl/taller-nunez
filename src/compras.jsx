@@ -1,5 +1,5 @@
 import { useEffect, useId, useMemo, useState } from 'react'
-import { subirArchivo, supabase } from './lib/supabaseClient'
+import { subirArchivo, supabase, urlFirmada } from './lib/supabaseClient'
 import { useProveedores } from './catalogos'
 import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
 import { r2, dinero, hoy } from './utils/format'
@@ -203,6 +203,21 @@ export function BarraAcciones({ onAtras, atrasLabel = 'Atrás', onGuardar, guard
       )}
     </div>
   )
+}
+
+// abre un archivo del bucket privado 'adjuntos' firmando la URL al momento del click, en vez
+// de depender de una URL guardada que puede haber expirado (ver urlFirmada en supabaseClient.js)
+export function EnlaceArchivo({ ruta, children }) {
+  const abrir = async (e) => {
+    e.preventDefault()
+    try {
+      const url = await urlFirmada(ruta)
+      window.open(url, '_blank', 'noopener,noreferrer')
+    } catch (err) {
+      alert('No se pudo abrir el archivo: ' + err.message)
+    }
+  }
+  return <a href="#" onClick={abrir}>{children}</a>
 }
 
 export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
@@ -1038,7 +1053,7 @@ function CuentasPorPagar() {
                     : <span> · vence {c.fechaVence}</span>
                 )}
               </div>
-              {c.facturaURL && <div><a href={c.facturaURL} target="_blank" rel="noreferrer">Ver factura</a></div>}
+              {c.facturaURL && <div><EnlaceArchivo ruta={c.facturaURL}>Ver factura</EnlaceArchivo></div>}
               <button className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button>
             </div>
           ))}

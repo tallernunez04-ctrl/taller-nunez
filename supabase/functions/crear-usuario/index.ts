@@ -4,9 +4,21 @@
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
 const ROLES = ['chofer', 'taller', 'compras', 'admin', 'dispatch']
-const cors = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+
+// lista blanca por variable de entorno (Supabase secret CORS_ORIGINS, separado por comas) --
+// aun no hay dominio de producción fijo, así que no se puede hardcodear; localhost:5173 (dev)
+// siempre queda incluido. Cuando haya dominio final: `supabase secrets set CORS_ORIGINS=https://...`
+const ORIGENES_PERMITIDOS = [
+  'http://localhost:5173',
+  ...(Deno.env.get('CORS_ORIGINS') ?? '').split(',').map((o) => o.trim()).filter(Boolean),
+]
+
+function corsHeaders(origin: string | null) {
+  return {
+    'Access-Control-Allow-Origin': origin && ORIGENES_PERMITIDOS.includes(origin) ? origin : ORIGENES_PERMITIDOS[0],
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Vary': 'Origin',
+  }
 }
 
 function generarPassword() {
@@ -15,6 +27,7 @@ function generarPassword() {
 }
 
 Deno.serve(async (req) => {
+  const cors = corsHeaders(req.headers.get('Origin'))
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
 
   const url = Deno.env.get('SUPABASE_URL')!

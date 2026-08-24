@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { subirArchivo, supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones } from './compras'
+import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones, EnlaceArchivo } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -941,7 +941,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
                     {e.estatus === 'entregada'
                       ? <span className="badge completado">Entregada</span>
                       : <span className="badge en_proceso">Pendiente</span>}
-                    {e.evidenciaUrl && <> <a href={e.evidenciaUrl} target="_blank" rel="noreferrer">POD</a></>}
+                    {e.evidenciaUrl && <> <EnlaceArchivo ruta={e.evidenciaUrl}>POD</EnlaceArchivo></>}
                   </td>
                   {editable && (
                     <td className="num">
@@ -1304,7 +1304,7 @@ function EntregasChofer({ viajeId, kmFinalKm }) {
               </button>
             </>
           )}
-          {e.evidenciaUrl && <p><a href={e.evidenciaUrl} target="_blank" rel="noreferrer">Ver evidencia</a></p>}
+          {e.evidenciaUrl && <p><EnlaceArchivo ruta={e.evidenciaUrl}>Ver evidencia</EnlaceArchivo></p>}
         </div>
       ))}
     </div>
@@ -1479,12 +1479,12 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
           </label>
         )}
         {facturado && <p><span className="muted">Facturado:</span> {cobranza.fechaFactura} · vence {cobranza.fechaVence}</p>}
-        {cobranza.facturaURL && <p><a href={cobranza.facturaURL} target="_blank" rel="noreferrer">Ver factura PDF</a></p>}
-        {cobranza.xmlURL && <p><a href={cobranza.xmlURL} target="_blank" rel="noreferrer">Descargar XML</a></p>}
+        {cobranza.facturaURL && <p><EnlaceArchivo ruta={cobranza.facturaURL}>Ver factura PDF</EnlaceArchivo></p>}
+        {cobranza.xmlURL && <p><EnlaceArchivo ruta={cobranza.xmlURL}>Descargar XML</EnlaceArchivo></p>}
         {cobranza.pagado && (
           <p>
             <span className="badge completado">Pagado {cobranza.pagadoAt || ''}</span>
-            {cobranza.comprobanteURL && <> · <a href={cobranza.comprobanteURL} target="_blank" rel="noreferrer">Ver comprobante</a></>}
+            {cobranza.comprobanteURL && <> · <EnlaceArchivo ruta={cobranza.comprobanteURL}>Ver comprobante</EnlaceArchivo></>}
           </p>
         )}
       </div>

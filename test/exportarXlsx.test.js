@@ -6,6 +6,11 @@ import path from 'node:path'
 import * as XLSX from 'xlsx'
 import { exportarXlsx } from '../src/utils/exportarXlsx.js'
 
+// xlsx 0.20 (build ESM pura) ya no auto-detecta fs de Node como el build CJS de antes --
+// hay que dárselo explícitamente. Solo afecta este test (Node); en el navegador (producción)
+// exportarXlsx nunca pasa por aquí, usa el flujo de descarga vía Blob/URL.createObjectURL.
+XLSX.set_fs(fs)
+
 function leerHojas(rutaArchivo) {
   const buf = fs.readFileSync(rutaArchivo)
   const wb = XLSX.read(buf, { type: 'buffer' })

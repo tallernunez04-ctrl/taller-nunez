@@ -571,6 +571,21 @@ function Usuarios() {
 function UsuarioForm({ existente, onDone }) {
   const [f, setF] = useState(existente ?? { email: '', nombre: '', rol: 'taller', activo: true })
   const [guardando, setGuardando] = useState(false)
+  const [cerrandoSesiones, setCerrandoSesiones] = useState(false)
+
+  const cerrarSesiones = async () => {
+    if (!confirm(`¿Cerrar la sesión de ${existente.email} en todos sus dispositivos? Se le asigna una contraseña nueva (se la tienes que compartir) y tendrá que volver a iniciar sesión.`)) return
+    setCerrandoSesiones(true)
+    try {
+      const { data, error } = await supabase.functions.invoke('cerrar-sesiones', { body: { usuarioId: existente.id } })
+      if (error) throw error
+      alert(`Sesiones cerradas.\n\nContraseña nueva: ${data.password}\n\nCompártela ahora, no se vuelve a mostrar.`)
+    } catch (e) {
+      alert('Error: ' + (e.context ? await e.context.text?.().catch(() => e.message) : e.message))
+    } finally {
+      setCerrandoSesiones(false)
+    }
+  }
 
   const guardar = async () => {
     setGuardando(true)
@@ -622,6 +637,11 @@ function UsuarioForm({ existente, onDone }) {
           <input type="checkbox" style={{ width: 'auto' }} checked={f.activo} onChange={(e) => setF({ ...f, activo: e.target.checked })} />
           <span style={{ margin: 0 }}>Activo (puede iniciar sesión)</span>
         </label>
+      )}
+      {existente && (
+        <button type="button" className="btn-secundario" disabled={cerrandoSesiones} onClick={cerrarSesiones}>
+          {cerrandoSesiones ? 'Cerrando…' : 'Cerrar sesión en todos los dispositivos'}
+        </button>
       )}
     </div>
   )

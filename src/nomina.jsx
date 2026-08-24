@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { subirArchivo, supabase } from './lib/supabaseClient'
-import { mapWO, SELECT_WO, useTabla, BarraAcciones } from './compras'
+import { mapWO, SELECT_WO, useTabla, BarraAcciones, EnlaceArchivo } from './compras'
 import { useOperadores } from './catalogos'
 import { mapViaje, SELECT_VIAJE } from './viajes'
 import { dinero, r2, hoy } from './utils/format'
@@ -466,7 +466,7 @@ function CorteDetalle({ nomina, onVolver }) {
           )}
           {d.descuentoViaticos > 0 && <p className="error">Descuento por viáticos no comprobados: -{dinero(d.descuentoViaticos, 'USD')}</p>}
           {d.comprobanteURL ? (
-            <p><a href={d.comprobanteURL} target="_blank" rel="noreferrer">Ver comprobante de transferencia</a></p>
+            <p><EnlaceArchivo ruta={d.comprobanteURL}>Ver comprobante de transferencia</EnlaceArchivo></p>
           ) : (
             <label className="campo no-imprimir"><span>Comprobante de transferencia</span>
               <input type="file" accept=".pdf,image/*" onChange={(e) => subirComprobante(d, e.target.files[0])} />
