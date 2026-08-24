@@ -10,6 +10,24 @@
   --accent: #C9A84C;
   --secundario: #7A1C2E;
   --danger: #B03A3A;
+
+  /* colores que ya existían sueltos (badges/gráficas), ahora tokenizados */
+  --success: #2E6B3E;
+  --warning: #C77E1E;
+  --info: #5A7CA6;
+
+  /* tokens de densidad -- rediseño ERP estilo SAP/Dynamics, piloto en Unidades
+     (ver auditoría 2026-08-24). No se aplican todavía al resto de la app. */
+  --fs-sm: 12px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --row-h: 32px;
 }
 
 * { box-sizing: border-box; }
@@ -540,3 +558,102 @@ td.num, th.num { text-align: right; }
 }
 .tl-item.activo::before { background: var(--accent); }
 .tl-motivo { font-style: italic; color: var(--secundario); margin: 0 0 0.2rem; }
+
+/* ============================================================
+   Piloto rediseño denso (SAP/Dynamics) -- solo Unidades por ahora.
+   Clases nuevas, deliberadamente aisladas de .tarjeta/.campo/.fab
+   globales para no cambiar otros módulos todavía. Si se aprueba el
+   piloto, esto se generaliza y estas clases dejan de ser "solo Unidades".
+   ============================================================ */
+
+.toolbar-lista {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+}
+.toolbar-lista h2 { margin: 0; }
+
+.tabla-densa { width: 100%; border-collapse: collapse; font-size: var(--fs-md); }
+.tabla-densa thead th {
+  text-align: left;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.tabla-densa tbody tr { height: var(--row-h); border-bottom: 1px solid var(--border); cursor: pointer; }
+.tabla-densa tbody tr:hover { background: var(--input); }
+.tabla-densa td { padding: var(--sp-2) var(--sp-3); vertical-align: middle; }
+.tabla-densa td.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.punto-estado {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: var(--sp-1);
+  vertical-align: middle;
+}
+.punto-estado.vencido { background: var(--danger); }
+.punto-estado.proximo { background: var(--warning); }
+.punto-estado.sin_configurar { background: var(--muted); }
+
+.expediente-seccion {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--sp-4);
+  background: var(--surface);
+  overflow: hidden;
+}
+.expediente-seccion-titulo {
+  font-size: var(--fs-sm);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  background: var(--input);
+}
+.expediente-fila {
+  display: grid;
+  grid-template-columns: 11rem 1fr;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  font-size: var(--fs-md);
+}
+.expediente-fila:last-child { border-bottom: none; }
+.expediente-fila > span:first-child { color: var(--muted); font-size: var(--fs-sm); }
+.expediente-fila input, .expediente-fila select {
+  font-size: var(--fs-md);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+}
+@media (max-width: 600px) {
+  .expediente-fila { grid-template-columns: 1fr; gap: var(--sp-1); }
+}
+
+/* barra-acciones es compartida por toda la app -- se redensifica en su
+   lugar (afecta a todos los formularios, es la única excepción al
+   aislamiento de arriba: ya estaba bien ubicada, solo se aprieta). */
+.barra-acciones { padding: var(--sp-2) var(--sp-3); }
+.barra-acciones .btn-primario,
+.barra-acciones .btn-secundario,
+.barra-acciones .btn-completar { padding: var(--sp-2) var(--sp-3); font-size: var(--fs-md); }
+
+/* botón primario (Guardar/Agregar) más compacto, tono más claro y esquinas más cuadradas --
+   pedido puntual sobre el piloto de Unidades, iterando antes de tocar más */
+.barra-acciones .btn-primario,
+.toolbar-lista .btn-primario {
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent) 78%, white);
+}

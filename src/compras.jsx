@@ -799,37 +799,61 @@ function Unidades({ soloLectura }) {
 
   return (
     <div>
-      <h2>Unidades</h2>
+      <div className="toolbar-lista">
+        <h2>Unidades</h2>
+        {!soloLectura && (
+          <button type="button" className="btn-primario" onClick={() => setEditando('nueva')}>
+            + Agregar unidad
+          </button>
+        )}
+      </div>
       {Object.entries(TIPOS).map(([tipo, label]) => {
         const grupo = unidades.filter((u) => u.tipo === tipo)
         return grupo.length > 0 && (
           <div key={tipo}>
             <h3>{label}</h3>
-            {grupo.map((u) => {
-              const Tarjeta = soloLectura ? 'div' : 'button'
-              return (
-                <Tarjeta key={u.id} className="tarjeta" onClick={soloLectura ? undefined : () => setEditando(u)}>
-                  <div className="tarjeta-top">
-                    <strong>{u.numero}</strong>
-                    <span className="muted">
-                      {u.ultimaLectura != null ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura === 'hrs' ? 'hrs' : 'km'}` : LECTURA_LABEL[u.unidadLectura]}
-                    </span>
-                  </div>
-                  {(u.marca || u.anio || u.modelo) && (
-                    <div className="muted">{[u.marca, u.anio, u.modelo].filter(Boolean).join(' ')}</div>
-                  )}
-                  <BadgeMantenimiento unidad={u} />
-                </Tarjeta>
-              )
-            })}
+            <div className="tabla-scroll">
+              <table className="tabla-densa">
+                <thead>
+                  <tr>
+                    <th>Número</th>
+                    <th>Última lectura</th>
+                    <th>Marca / Modelo</th>
+                    <th className="num">Año</th>
+                    <th>Mantenimiento</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {grupo.map((u) => (
+                    <tr key={u.id} onClick={soloLectura ? undefined : () => setEditando(u)}>
+                      <td><strong>{u.numero}</strong></td>
+                      <td className="num">
+                        {u.ultimaLectura != null
+                          ? `${u.ultimaLectura.toLocaleString()} ${u.unidadLectura === 'hrs' ? 'hrs' : 'km'}`
+                          : LECTURA_LABEL[u.unidadLectura]}
+                      </td>
+                      <td className="muted">{[u.marca, u.modelo].filter(Boolean).join(' ') || '—'}</td>
+                      <td className="num">{u.anio || '—'}</td>
+                      <td><IndicadorMantenimiento unidad={u} /></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         )
       })}
-      {!soloLectura && (
-        <button className="fab" onClick={() => setEditando('nueva')} aria-label="Agregar unidad">+</button>
-      )}
     </div>
   )
+}
+
+// versión compacta de BadgeMantenimiento para la tabla densa (punto + texto corto en vez de
+// pill con fondo de color) -- BadgeMantenimiento sigue igual, la usan otras pantallas (Diésel)
+function IndicadorMantenimiento({ unidad }) {
+  const estatus = estatusMantenimiento(unidad)
+  if (!estatus) return <span className="muted">—</span>
+  const LABEL = { sin_configurar: 'Sin configurar', vencido: 'Vencido', proximo: 'Próximo' }
+  return <span><span className={'punto-estado ' + estatus} />{LABEL[estatus]}</span>
 }
 
 function UnidadForm({ unidad, onDone }) {
@@ -885,63 +909,67 @@ function UnidadForm({ unidad, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel={unidad ? 'Guardar cambios' : 'Guardar unidad'} />
       <h2>{unidad ? `Unidad ${unidad.numero}` : 'Agregar unidad'}</h2>
-      {!unidad && (
-        <>
-          <label className="campo">
-            <span>Número de unidad</span>
-            <input value={f.numero} onChange={set('numero')} placeholder="Ej. F73" />
-          </label>
-          <label className="campo">
-            <span>Tipo</span>
-            <select value={f.tipo} onChange={(e) => {
-              const tipo = e.target.value
-              setF({ ...f, tipo, unidadLectura: tipo === 'reefer' ? 'hrs' : 'mi' })
-            }}>
-              <option value="truck">Truck</option>
-              <option value="reefer">Reefer</option>
-              <option value="plataforma">Plataforma</option>
-              <option value="caja_seca">Caja seca</option>
-            </select>
-          </label>
-        </>
-      )}
-      <label className="campo">
-        <span>Unidad de lectura</span>
-        <select value={f.unidadLectura} onChange={set('unidadLectura')}>
-          <option value="mi">Millas (mi)</option>
-          <option value="km">Kilómetros (km)</option>
-          <option value="hrs">Horas (hrs)</option>
-        </select>
-      </label>
-      <label className="campo">
-        <span>Marca</span>
-        <input value={f.marca} onChange={set('marca')} />
-      </label>
-      <div className="fila-2">
-        <label className="campo">
-          <span>Año</span>
-          <input value={f.anio} onChange={set('anio')} inputMode="numeric" />
+
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        {!unidad && (
+          <>
+            <label className="expediente-fila">
+              <span>Número de unidad</span>
+              <input value={f.numero} onChange={set('numero')} placeholder="Ej. F73" />
+            </label>
+            <label className="expediente-fila">
+              <span>Tipo</span>
+              <select value={f.tipo} onChange={(e) => {
+                const tipo = e.target.value
+                setF({ ...f, tipo, unidadLectura: tipo === 'reefer' ? 'hrs' : 'mi' })
+              }}>
+                <option value="truck">Truck</option>
+                <option value="reefer">Reefer</option>
+                <option value="plataforma">Plataforma</option>
+                <option value="caja_seca">Caja seca</option>
+              </select>
+            </label>
+          </>
+        )}
+        <label className="expediente-fila">
+          <span>Unidad de lectura</span>
+          <select value={f.unidadLectura} onChange={set('unidadLectura')}>
+            <option value="mi">Millas (mi)</option>
+            <option value="km">Kilómetros (km)</option>
+            <option value="hrs">Horas (hrs)</option>
+          </select>
         </label>
-        <label className="campo">
+        <label className="expediente-fila">
+          <span>Marca</span>
+          <input value={f.marca} onChange={set('marca')} />
+        </label>
+        <label className="expediente-fila">
           <span>Modelo</span>
           <input value={f.modelo} onChange={set('modelo')} />
         </label>
+        <label className="expediente-fila">
+          <span>Año</span>
+          <input value={f.anio} onChange={set('anio')} inputMode="numeric" />
+        </label>
+        <label className="expediente-fila">
+          <span>VIN / Serie</span>
+          <input value={f.vin} onChange={set('vin')} />
+        </label>
       </div>
-      <label className="campo">
-        <span>VIN / Serie</span>
-        <input value={f.vin} onChange={set('vin')} />
-      </label>
+
       {(f.tipo === 'truck' || f.tipo === 'reefer') && (
-        <div className="fila-2">
-          <label className="campo">
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo">Mantenimiento</div>
+          <label className="expediente-fila">
             <span>Mantenimiento cada ({f.unidadLectura})</span>
             <input type="number" inputMode="numeric" min="0" value={f.mantenimientoCadaX}
               onChange={set('mantenimientoCadaX')} placeholder={f.unidadLectura === 'hrs' ? 'Ej. 500' : 'Ej. 50000'} />
           </label>
-          <label className="campo">
+          <label className="expediente-fila">
             <span>Último mantenimiento en ({f.unidadLectura})</span>
             <input type="number" inputMode="numeric" min="0" value={f.ultimoMantenimientoValor}
               onChange={set('ultimoMantenimientoValor')} />
