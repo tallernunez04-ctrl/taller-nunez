@@ -179,8 +179,9 @@ export default function App() {
 
   const nav = navDe(usuario.rol)
   const actual = nav.find((n) => n.id === vista) ?? nav[0]
-  // chofer usa layout móvil puro (nav inferior); el resto tiene sidebar en desktop
-  const escritorio = usuario.rol !== 'chofer'
+  // chofer y taller usan layout móvil puro (nav inferior) -- ambos operan desde celular/tablet
+  // en planta, no en escritorio; dispatch/compras/admin sí usan el sidebar ERP denso
+  const escritorio = usuario.rol !== 'chofer' && usuario.rol !== 'taller'
 
   const contenido = actual.mod === 'taller' ? (
     <Taller usuario={usuario} vista={actual.id} setVista={setVista} />

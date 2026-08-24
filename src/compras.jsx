@@ -220,7 +220,7 @@ export function EnlaceArchivo({ ruta, children }) {
   return <a href="#" onClick={abrir}>{children}</a>
 }
 
-export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
+export function SelectorUnidad({ unidades, value, onChange, placeholder, expediente }) {
   const listId = useId()
   const seleccionada = unidades.find((u) => u.id === value)
   const [texto, setTexto] = useState(seleccionada?.numero ?? '')
@@ -240,7 +240,7 @@ export function SelectorUnidad({ unidades, value, onChange, placeholder }) {
   }
 
   return (
-    <label className="campo">
+    <label className={expediente ? 'expediente-fila' : 'campo'}>
       <span>{placeholder}</span>
       <input
         list={listId}
@@ -357,30 +357,32 @@ function WorkOrders({ usuario }) {
       </div>
       {wos === null && <p className="muted">Cargando…</p>}
       {wos !== null && lista.length === 0 && <p className="muted vacio">No hay work orders con estos filtros.</p>}
-      {lista.map((w) => (
-        <button key={w.id} className="tarjeta" onClick={() => setDetalle(w)}>
-          <div className="tarjeta-top">
-            <strong>{w.wo}</strong>
-            <span className={'badge ' + w.estatus}>{ESTATUS[w.estatus]}</span>
-          </div>
-          <div className="muted">
-            {w.fecha} · Unidad <strong>{w.unidadNumero}</strong>
-            {w.lectura?.valor ? ` · ${w.lectura.valor.toLocaleString()} ${w.lectura.unidad}` : ''}
-          </div>
-          {(w.chofer || w.mecanico) && (
-            <div className="muted">
-              {w.chofer && `Chofer: ${w.chofer}`}
-              {w.chofer && w.mecanico && ' · '}
-              {w.mecanico && `Mecánico: ${w.mecanico}`}
-            </div>
-          )}
-          {w.tipoFalla?.length > 0 && (
-            <div className="chips">
-              {w.tipoFalla.map((f) => <span key={f} className="chip">{FALLA_LABEL[f]}</span>)}
-            </div>
-          )}
-        </button>
-      ))}
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr>
+                <th>WO</th><th>Fecha</th><th>Unidad</th><th>Estatus</th><th>Chofer / Mecánico</th><th>Fallas</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lista.map((w) => (
+                <tr key={w.id} onClick={() => setDetalle(w)}>
+                  <td><strong>{w.wo}</strong></td>
+                  <td className="muted">{w.fecha}</td>
+                  <td>
+                    {w.unidadNumero}
+                    {w.lectura?.valor && <span className="muted"> · {w.lectura.valor.toLocaleString()} {w.lectura.unidad}</span>}
+                  </td>
+                  <td><span className={'badge ' + w.estatus}>{ESTATUS[w.estatus]}</span></td>
+                  <td className="muted">{[w.chofer, w.mecanico].filter(Boolean).join(' · ') || '—'}</td>
+                  <td className="muted">{w.tipoFalla?.length > 0 ? w.tipoFalla.map((f) => FALLA_LABEL[f]).join(', ') : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -394,7 +396,7 @@ function WODetalle({ usuario, wo, onVolver }) {
   const totalUSD = r2(compras.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones
         onAtras={onVolver}
         extra={<button type="button" className="btn-primario" onClick={() => setComprando(true)}>Registrar compra para esta WO</button>}
@@ -403,40 +405,46 @@ function WODetalle({ usuario, wo, onVolver }) {
         <h2>{wo.wo}</h2>
         <span className={'badge ' + wo.estatus}>{ESTATUS[wo.estatus]}</span>
       </div>
-      <div className="tarjeta detalle">
-        <p><span className="muted">Fecha:</span> {wo.fecha}</p>
-        <p><span className="muted">Unidad:</span> <strong>{wo.unidadNumero}</strong>
-          {wo.lectura?.valor ? ` · ${wo.lectura.valor.toLocaleString()} ${wo.lectura.unidad}` : ''}</p>
-        {wo.chofer && <p><span className="muted">Chofer:</span> {wo.chofer}</p>}
-        {wo.mecanico && <p><span className="muted">Mecánico:</span> {wo.mecanico}</p>}
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <div className="expediente-fila"><span>Fecha</span><span>{wo.fecha}</span></div>
+        <div className="expediente-fila">
+          <span>Unidad</span>
+          <span><strong>{wo.unidadNumero}</strong>{wo.lectura?.valor ? ` · ${wo.lectura.valor.toLocaleString()} ${wo.lectura.unidad}` : ''}</span>
+        </div>
+        {wo.chofer && <div className="expediente-fila"><span>Chofer</span><span>{wo.chofer}</span></div>}
+        {wo.mecanico && <div className="expediente-fila"><span>Mecánico</span><span>{wo.mecanico}</span></div>}
         {wo.tipoFalla?.length > 0 && (
-          <div className="chips">
-            {wo.tipoFalla.map((f) => <span key={f} className="chip">{FALLA_LABEL[f]}</span>)}
-          </div>
+          <div className="expediente-fila"><span>Tipo de falla</span><span>{wo.tipoFalla.map((f) => FALLA_LABEL[f]).join(', ')}</span></div>
         )}
-        {wo.diagnostico && <p><span className="muted">Diagnóstico:</span><br />{wo.diagnostico}</p>}
+        {wo.diagnostico && <div className="expediente-fila"><span>Diagnóstico</span><span>{wo.diagnostico}</span></div>}
         {piezasLista(wo.piezasRequeridas).length > 0 && (
-          <div>
-            <span className="muted">Piezas requeridas:</span>
-            <ol className="lista-piezas">
-              {piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}
-            </ol>
+          <div className="expediente-fila">
+            <span>Piezas requeridas</span>
+            <ol className="lista-piezas">{piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}</ol>
           </div>
         )}
-        {wo.notasMecanico && <p><span className="muted">Notas del mecánico:</span><br />{wo.notasMecanico}</p>}
+        {wo.notasMecanico && <div className="expediente-fila"><span>Notas del mecánico</span><span>{wo.notasMecanico}</span></div>}
       </div>
 
       <h3>Compras registradas</h3>
       {compras.length === 0 && <p className="muted">Sin compras para esta WO.</p>}
-      {compras.map((c) => (
-        <div key={c.id} className="tarjeta detalle">
-          <div className="tarjeta-top">
-            <span>{c.fecha}</span>
-            <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
-          </div>
-          <div className="muted">{(c.grupos ?? []).map((g) => g.proveedor).filter(Boolean).join(', ')}</div>
+      {compras.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead><tr><th>Fecha</th><th>Proveedor</th><th className="num">Total</th></tr></thead>
+            <tbody>
+              {compras.map((c) => (
+                <tr key={c.id}>
+                  <td className="muted">{c.fecha}</td>
+                  <td>{(c.grupos ?? []).map((g) => g.proveedor).filter(Boolean).join(', ')}</td>
+                  <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
+      )}
       {compras.length > 0 && (
         <p className="total-detalle">Total: {dinero(totalUSD, 'USD')}</p>
       )}
@@ -1032,12 +1040,12 @@ function CuentasPorPagar() {
 
   if (pagando) {
     return (
-      <div>
+      <div className="expediente">
         <h2>Pagar {pagando.poFolio || 'compra'}</h2>
-        <div className="tarjeta detalle">
-          <p><span className="muted">Proveedor:</span> {(pagando.grupos ?? []).map((g) => g.proveedor).join(', ')}</p>
-          <p><span className="muted">Vence:</span> {pagando.fechaVence}</p>
-          <p><span className="muted">Monto:</span> <strong>{dinero(pagando.totalGeneralUSD, 'USD')}</strong></p>
+        <div className="expediente-seccion">
+          <div className="expediente-fila"><span>Proveedor</span><span>{(pagando.grupos ?? []).map((g) => g.proveedor).join(', ')}</span></div>
+          <div className="expediente-fila"><span>Vence</span><span>{pagando.fechaVence}</span></div>
+          <div className="expediente-fila"><span>Monto</span><span><strong>{dinero(pagando.totalGeneralUSD, 'USD')}</strong></span></div>
         </div>
         <label className="campo"><span>Comprobante de pago</span>
           <input type="file" accept=".pdf,image/*" onChange={(e) => setComprobante(e.target.files[0] ?? null)} />
@@ -1067,24 +1075,33 @@ function CuentasPorPagar() {
             {semana === 'sin-fecha' ? 'Sin fecha de vencimiento' : `Semana del ${semana}`}
             {' · '}{dinero(r2(lista.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0)), 'USD')}
           </h3>
-          {lista.map((c) => (
-            <div key={c.id} className="tarjeta">
-              <div className="tarjeta-top">
-                <strong>{c.poFolio || c.fecha} · {(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</strong>
-                <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
-              </div>
-              <div className="muted">
-                Compra {c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}
-                {c.fechaVence && (
-                  c.fechaVence < hoyStr
-                    ? <span className="badge vencido" style={{ marginLeft: '0.5rem' }}>Vencida</span>
-                    : <span> · vence {c.fechaVence}</span>
-                )}
-              </div>
-              {c.facturaURL && <div><EnlaceArchivo ruta={c.facturaURL}>Ver factura</EnlaceArchivo></div>}
-              <button className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button>
-            </div>
-          ))}
+          <div className="tabla-scroll">
+            <table className="tabla-densa">
+              <thead>
+                <tr>
+                  <th>Folio</th><th>Proveedor</th><th>Compra</th><th>Vence</th>
+                  <th className="num">Total</th><th>Factura</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lista.map((c) => (
+                  <tr key={c.id}>
+                    <td><strong>{c.poFolio || c.fecha}</strong></td>
+                    <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
+                    <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
+                    <td className="muted">
+                      {c.fechaVence
+                        ? <>{c.fechaVence < hoyStr && <span className="punto-estado vencido" />}{c.fechaVence}</>
+                        : '—'}
+                    </td>
+                    <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
+                    <td>{c.facturaURL ? <EnlaceArchivo ruta={c.facturaURL}>Ver</EnlaceArchivo> : '—'}</td>
+                    <td><button type="button" className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       ))}
     </div>

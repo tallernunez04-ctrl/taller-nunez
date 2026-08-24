@@ -101,10 +101,10 @@ export default function Llantas() {
         <p className="muted vacio">Sin eventos de llantas registrados todavía.<br />Se capturan desde una WO en Taller, marcando "Llantas" como tipo de falla.</p>
       )}
       {filas.map((f) => (
-        <div key={f.id} className="tarjeta detalle">
-          <div className="tarjeta-top">
-            <strong>Unidad {f.numero}</strong>
-            <span className="muted">
+        <div key={f.id} className="expediente-seccion">
+          <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Unidad {f.numero}</span>
+            <span style={{ textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>
               {f.diasDesdeRotacion == null ? 'Sin rotación registrada' : (
                 f.esHrs
                   ? `Rotación: ${f.diasDesdeRotacion.toLocaleString()} días`
@@ -112,10 +112,10 @@ export default function Llantas() {
               )}
             </span>
           </div>
-          {f.posiciones.length === 0 && <p className="muted">Sin reemplazos registrados.</p>}
+          {f.posiciones.length === 0 && <p className="muted" style={{ padding: '0 var(--sp-3) var(--sp-2)' }}>Sin reemplazos registrados.</p>}
           {f.posiciones.length > 0 && (
             <div className="tabla-scroll">
-              <table>
+              <table className="tabla-densa">
                 <thead>
                   <tr>
                     <th>Posición</th>

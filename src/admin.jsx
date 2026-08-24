@@ -35,6 +35,7 @@ function Gastos() {
   const [hasta, setHasta] = useState(hoy())
   const [fUnidad, setFUnidad] = useState('')
   const [fMoneda, setFMoneda] = useState('')
+  const [detalle, setDetalle] = useState(null)
   const unidades = useUnidades()
   const tipoDe = Object.fromEntries(unidades.map((u) => [u.id, u.tipo]))
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).order('created_at', { ascending: false }))
@@ -43,6 +44,8 @@ function Gastos() {
     (!desde || c.fecha >= desde) && (!hasta || c.fecha <= hasta)
     && (!fUnidad || c.unidadId === fUnidad)
     && (!fMoneda || (c.grupos ?? []).some((g) => g.moneda === fMoneda)))
+
+  if (detalle) return <GastoDetalle c={detalle} tipo={TIPO_LABEL[tipoDe[detalle.unidadId]] ?? ''} onVolver={() => setDetalle(null)} />
 
   return (
     <div>
@@ -74,9 +77,30 @@ function Gastos() {
 
       {compras === null && <p className="muted">Cargando…</p>}
       {compras !== null && lista.length === 0 && <p className="muted vacio">Sin gastos en este rango.</p>}
-      {lista.map((c) => (
-        <GastoCard key={c.id} c={c} tipo={TIPO_LABEL[tipoDe[c.unidadId]] ?? ''} />
-      ))}
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Fecha</th><th>Unidad</th><th>WO</th><th>Método</th><th>Proveedor(es)</th><th className="num">Total (USD)</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((c) => {
+                const tipo = TIPO_LABEL[tipoDe[c.unidadId]] ?? ''
+                return (
+                  <tr key={c.id} onClick={() => setDetalle(c)}>
+                    <td className="muted">{c.fecha}</td>
+                    <td>{c.unidadNumero}{tipo && <span className="muted"> ({tipo})</span>}</td>
+                    <td className="muted">{c.woNumero || 'Compra directa'}</td>
+                    <td className="muted">{METODO_LABEL[c.metodoPago] ?? c.metodoPago}</td>
+                    <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).filter(Boolean).join(', ')}</td>
+                    <td className="num"><strong>{dinero(c.totalGeneralUSD, 'USD')}</strong></td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -103,98 +127,97 @@ function exportarReporteGastos(lista, desde, hasta) {
   })
 }
 
-function GastoCard({ c, tipo }) {
-  const [abierto, setAbierto] = useState(false)
+function GastoDetalle({ c, tipo, onVolver }) {
   const [wo, setWo] = useState(null)
 
   useEffect(() => {
-    if (abierto && c.woId && !wo) {
+    if (c.woId) {
       supabase.from('work_orders').select(SELECT_WO).eq('id', c.woId).single()
         .then(({ data, error }) => { if (!error && data) setWo(mapWO(data)) })
         .catch(console.error)
     }
-  }, [abierto, c.woId, wo])
+  }, [c.woId])
 
   return (
-    <div className="tarjeta">
-      <div className="gasto-cab" onClick={() => setAbierto(!abierto)}>
-        <div className="tarjeta-top">
-          <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
-          <span className="muted">{abierto ? '▾' : '▸'}</span>
-        </div>
-        <div className="muted">
-          {c.fecha} · Unidad <strong>{c.unidadNumero}</strong>{tipo && ` (${tipo})`} · {c.woNumero || 'Compra directa'}
-        </div>
-        <div className="muted">
-          {METODO_LABEL[c.metodoPago] ?? c.metodoPago}
-          {' · '}{(c.grupos ?? []).map((g) => g.proveedor).filter(Boolean).join(', ')} · {c.creadoPor}
-        </div>
+    <div className="expediente">
+      <BarraAcciones
+        onAtras={onVolver}
+        extra={<button type="button" className="btn-primario" onClick={() => exportarGasto(c, wo)}>Descargar Excel</button>}
+      />
+      <div className="tarjeta-top">
+        <h2>{dinero(c.totalGeneralUSD, 'USD')}</h2>
+        <span className="muted">{c.fecha}</span>
       </div>
-      {abierto && (
-        <div className="subseccion">
-          {c.notas && <p><span className="muted">Notas:</span> {c.notas}</p>}
-          {(c.grupos ?? []).map((g, gi) => (
-            <div key={gi} className="grupo-proveedor">
-              <div className="tarjeta-top">
-                <strong>{g.proveedor}</strong>
-                <span className="muted">{g.moneda}{g.folioFactura && ` · Folio ${g.folioFactura}`}</span>
-              </div>
-              <div className="tabla-scroll">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Concepto</th><th className="num">Cant.</th>
-                      <th className="num">Costo unit.</th><th className="num">Subtotal</th>
-                      <th className="num">IVA %</th><th className="num">IVA $</th><th className="num">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {g.conceptos.map((l, i) => (
-                      <tr key={i}>
-                        <td>{l.concepto}</td><td className="num">{l.cantidad}</td>
-                        <td className="num">{dinero(l.costoUnitario, g.moneda)}</td>
-                        <td className="num">{dinero(l.subtotal, g.moneda)}</td>
-                        <td className="num">{l.tasaIVA}%</td>
-                        <td className="num">{dinero(l.iva, g.moneda)}</td>
-                        <td className="num">{dinero(l.total, g.moneda)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              <div className="linea-calc grupo-total">
-                <span className="muted">Total proveedor</span>
-                <strong>
-                  {dinero(g.total, g.moneda)}
-                  {g.moneda === 'MXN' ? ` · ${dinero(g.totalUSD, 'USD')}` : ''}
-                </strong>
-              </div>
-            </div>
-          ))}
-          <div className="totales">
-            <div><span className="muted">Subtotal general (USD)</span><span>{dinero(c.subtotalGeneralUSD, 'USD')}</span></div>
-            <div><span className="muted">IVA general (USD)</span><span>{dinero(c.ivaGeneralUSD, 'USD')}</span></div>
-            <div className="total-grande"><span>TOTAL GENERAL</span><span>{dinero(c.totalGeneralUSD, 'USD')}</span></div>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <div className="expediente-fila"><span>Unidad</span><span>{c.unidadNumero}{tipo && ` (${tipo})`}</span></div>
+        <div className="expediente-fila"><span>WO</span><span>{c.woNumero || 'Compra directa'}</span></div>
+        <div className="expediente-fila"><span>Método de pago</span><span>{METODO_LABEL[c.metodoPago] ?? c.metodoPago}</span></div>
+        <div className="expediente-fila"><span>Registrado por</span><span>{c.creadoPor}</span></div>
+        {c.notas && <div className="expediente-fila"><span>Notas</span><span>{c.notas}</span></div>}
+      </div>
+      {(c.grupos ?? []).map((g, gi) => (
+        <div key={gi} className="expediente-seccion">
+          <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>{g.proveedor}</span>
+            <span style={{ textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>
+              {g.moneda}{g.folioFactura && ` · Folio ${g.folioFactura}`}
+            </span>
           </div>
-          {wo && (
-            <div className="subseccion">
-              <p><strong>{wo.wo}</strong> <span className={'badge ' + wo.estatus}>{ESTATUS[wo.estatus]}</span></p>
-              {wo.mecanico && <p><span className="muted">Mecánico:</span> {wo.mecanico}</p>}
-              {wo.tipoFalla?.length > 0 && <p><span className="muted">Fallas:</span> {fallasTexto(wo.tipoFalla)}</p>}
-              {wo.diagnostico && <p><span className="muted">Diagnóstico:</span> {wo.diagnostico}</p>}
-              {piezasLista(wo.piezasRequeridas).length > 0 && (
-                <div>
-                  <span className="muted">Piezas requeridas:</span>
-                  <ol className="lista-piezas">
-                    {piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}
-                  </ol>
-                </div>
-              )}
+          <div className="tabla-scroll">
+            <table className="tabla-densa">
+              <thead>
+                <tr>
+                  <th>Concepto</th><th className="num">Cant.</th>
+                  <th className="num">Costo unit.</th><th className="num">Subtotal</th>
+                  <th className="num">IVA %</th><th className="num">IVA $</th><th className="num">Total</th>
+                </tr>
+              </thead>
+              <tbody>
+                {g.conceptos.map((l, i) => (
+                  <tr key={i}>
+                    <td>{l.concepto}</td><td className="num">{l.cantidad}</td>
+                    <td className="num">{dinero(l.costoUnitario, g.moneda)}</td>
+                    <td className="num">{dinero(l.subtotal, g.moneda)}</td>
+                    <td className="num">{l.tasaIVA}%</td>
+                    <td className="num">{dinero(l.iva, g.moneda)}</td>
+                    <td className="num">{dinero(l.total, g.moneda)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="linea-calc grupo-total">
+            <span className="muted">Total proveedor</span>
+            <strong>
+              {dinero(g.total, g.moneda)}
+              {g.moneda === 'MXN' ? ` · ${dinero(g.totalUSD, 'USD')}` : ''}
+            </strong>
+          </div>
+        </div>
+      ))}
+      <div className="totales">
+        <div><span className="muted">Subtotal general (USD)</span><span>{dinero(c.subtotalGeneralUSD, 'USD')}</span></div>
+        <div><span className="muted">IVA general (USD)</span><span>{dinero(c.ivaGeneralUSD, 'USD')}</span></div>
+        <div className="total-grande"><span>TOTAL GENERAL</span><span>{dinero(c.totalGeneralUSD, 'USD')}</span></div>
+      </div>
+      {wo && (
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <span>Work Order {wo.wo}</span>
+            <span className={'badge ' + wo.estatus}>{ESTATUS[wo.estatus]}</span>
+          </div>
+          {wo.mecanico && <div className="expediente-fila"><span>Mecánico</span><span>{wo.mecanico}</span></div>}
+          {wo.tipoFalla?.length > 0 && <div className="expediente-fila"><span>Fallas</span><span>{fallasTexto(wo.tipoFalla)}</span></div>}
+          {wo.diagnostico && <div className="expediente-fila"><span>Diagnóstico</span><span>{wo.diagnostico}</span></div>}
+          {piezasLista(wo.piezasRequeridas).length > 0 && (
+            <div className="expediente-fila">
+              <span>Piezas requeridas</span>
+              <ol className="lista-piezas">
+                {piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}
+              </ol>
             </div>
           )}
-          <div className="acciones">
-            <button className="btn-primario" onClick={() => exportarGasto(c, wo)}>Descargar Excel</button>
-          </div>
         </div>
       )}
     </div>
@@ -338,7 +361,7 @@ function Dashboard() {
 
       {filas.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr>
                 <th>Unidad</th><th>Tipo</th><th className="num"># Compras</th>
@@ -393,18 +416,21 @@ function DetalleUnidad() {
 
       {unidad && (
         <>
-          <div className="tarjeta detalle">
-            <div className="tarjeta-top">
-              <strong>{unidad.numero}</strong>
-              <span className="muted">{TIPO_LABEL[unidad.tipo]}</span>
+          <div className="expediente-seccion">
+            <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{unidad.numero}</span>
+              <span style={{ textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>{TIPO_LABEL[unidad.tipo]}</span>
             </div>
             {(unidad.marca || unidad.anio || unidad.modelo) && (
-              <p>{[unidad.marca, unidad.anio, unidad.modelo].filter(Boolean).join(' ')}</p>
+              <div className="expediente-fila"><span>Marca/Modelo</span><span>{[unidad.marca, unidad.anio, unidad.modelo].filter(Boolean).join(' ')}</span></div>
             )}
-            {unidad.vin && <p><span className="muted">VIN:</span> {unidad.vin}</p>}
-            <p><span className="muted">Lectura:</span> {LECTURA_LABEL[unidad.unidadLectura]}
-              {unidad.ultimaLectura != null && ` · última: ${unidad.ultimaLectura.toLocaleString()} ${unidad.unidadLectura === 'hrs' ? 'hrs' : 'km'}`}</p>
-            <p><span className="muted">Total histórico:</span> <strong>{dinero(totalUSD, 'USD')}</strong></p>
+            {unidad.vin && <div className="expediente-fila"><span>VIN</span><span>{unidad.vin}</span></div>}
+            <div className="expediente-fila">
+              <span>Lectura</span>
+              <span>{LECTURA_LABEL[unidad.unidadLectura]}
+                {unidad.ultimaLectura != null && ` · última: ${unidad.ultimaLectura.toLocaleString()} ${unidad.unidadLectura === 'hrs' ? 'hrs' : 'km'}`}</span>
+            </div>
+            <div className="expediente-fila"><span>Total histórico</span><span><strong>{dinero(totalUSD, 'USD')}</strong></span></div>
           </div>
 
           <h3>Historial de reparaciones ({wos.length})</h3>
@@ -415,18 +441,25 @@ function DetalleUnidad() {
 
           <h3>Compras directas ({directas.length})</h3>
           {directas.length === 0 && <p className="muted">Sin compras directas.</p>}
-          {directas.map((c) => (
-            <div key={c.id} className="tarjeta detalle">
-              <div className="tarjeta-top">
-                <span>{c.fecha}</span>
-                <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
-              </div>
-              <div className="muted">
-                {(c.grupos ?? []).flatMap((g) => g.conceptos).map((x) => x.concepto).filter(Boolean).join(', ')}
-              </div>
-              {c.notas && <div className="muted">{c.notas}</div>}
+          {directas.length > 0 && (
+            <div className="tabla-scroll">
+              <table className="tabla-densa">
+                <thead><tr><th>Fecha</th><th>Conceptos</th><th className="num">Total</th></tr></thead>
+                <tbody>
+                  {directas.map((c) => (
+                    <tr key={c.id}>
+                      <td className="muted">{c.fecha}</td>
+                      <td>
+                        {(c.grupos ?? []).flatMap((g) => g.conceptos).map((x) => x.concepto).filter(Boolean).join(', ')}
+                        {c.notas && <div className="muted">{c.notas}</div>}
+                      </td>
+                      <td className="num"><strong>{dinero(c.totalGeneralUSD, 'USD')}</strong></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
 
           <div className="acciones">
             <button className="btn-primario" onClick={() => exportarHistorial(unidad, wos, compras, totalUSD)}>
@@ -442,40 +475,45 @@ function DetalleUnidad() {
 function WOExpandible({ wo, compras }) {
   const [abierto, setAbierto] = useState(false)
   return (
-    <div className="tarjeta">
-      <div className="gasto-cab" onClick={() => setAbierto(!abierto)}>
-        <div className="tarjeta-top">
-          <strong>{wo.wo}</strong>
+    <div className="expediente-seccion">
+      <div
+        className="expediente-seccion-titulo"
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer' }}
+        onClick={() => setAbierto(!abierto)}
+      >
+        <span>{wo.wo} <span style={{ textTransform: 'none', fontWeight: 400, letterSpacing: 0 }}>· {wo.fecha}{wo.mecanico && ` · ${wo.mecanico}`}</span></span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 'var(--sp-2)' }}>
           <span className={'badge ' + wo.estatus}>{ESTATUS[wo.estatus]}</span>
-        </div>
-        <div className="muted">{wo.fecha}{wo.mecanico && ` · ${wo.mecanico}`} <span style={{ float: 'right' }}>{abierto ? '▾' : '▸'}</span></div>
+          <span className="muted">{abierto ? '▾' : '▸'}</span>
+        </span>
       </div>
       {abierto && (
-        <div className="subseccion detalle">
-          {wo.lectura?.valor > 0 && <p><span className="muted">Lectura:</span> {wo.lectura.valor.toLocaleString()} {wo.lectura.unidad}</p>}
-          {wo.tipoFalla?.length > 0 && <p><span className="muted">Fallas:</span> {fallasTexto(wo.tipoFalla)}</p>}
-          {wo.diagnostico && <p><span className="muted">Diagnóstico:</span> {wo.diagnostico}</p>}
+        <>
+          {wo.lectura?.valor > 0 && <div className="expediente-fila"><span>Lectura</span><span>{wo.lectura.valor.toLocaleString()} {wo.lectura.unidad}</span></div>}
+          {wo.tipoFalla?.length > 0 && <div className="expediente-fila"><span>Fallas</span><span>{fallasTexto(wo.tipoFalla)}</span></div>}
+          {wo.diagnostico && <div className="expediente-fila"><span>Diagnóstico</span><span>{wo.diagnostico}</span></div>}
           {piezasLista(wo.piezasRequeridas).length > 0 && (
-            <div>
-              <span className="muted">Piezas requeridas:</span>
+            <div className="expediente-fila">
+              <span>Piezas requeridas</span>
               <ol className="lista-piezas">
                 {piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}
               </ol>
             </div>
           )}
-          {wo.notasMecanico && <p><span className="muted">Notas:</span> {wo.notasMecanico}</p>}
+          {wo.notasMecanico && <div className="expediente-fila"><span>Notas</span><span>{wo.notasMecanico}</span></div>}
           {compras.length > 0 && (
-            <>
-              <p><span className="muted">Compras de esta WO:</span></p>
-              {compras.map((c) => (
-                <div key={c.id} className="tarjeta-top">
-                  <span className="muted">{c.fecha}</span>
-                  <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
-                </div>
-              ))}
-            </>
+            <div className="tabla-scroll">
+              <table className="tabla-densa">
+                <thead><tr><th>Fecha</th><th className="num">Total</th></tr></thead>
+                <tbody>
+                  {compras.map((c) => (
+                    <tr key={c.id}><td className="muted">{c.fecha}</td><td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td></tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           )}
-        </div>
+        </>
       )}
     </div>
   )
@@ -550,20 +588,29 @@ function Usuarios() {
 
   return (
     <div>
-      <h2>Usuarios</h2>
+      <div className="toolbar-lista">
+        <h2>Usuarios</h2>
+        <button className="btn-primario" onClick={() => setEditando('nuevo')}>+ Agregar usuario</button>
+      </div>
       {usuarios === null && <p className="muted">Cargando…</p>}
-      {(usuarios ?? []).map((u) => (
-        <button key={u.id} className="tarjeta" onClick={() => setEditando(u)}>
-          <div className="tarjeta-top">
-            <strong>{u.nombre}</strong>
-            <span className={'badge ' + (u.activo ? 'completado' : 'inactivo')}>
-              {u.activo ? 'Activo' : 'Inactivo'}
-            </span>
-          </div>
-          <div className="muted">{u.email} · {u.rol}</div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar usuario">+</button>
+      {usuarios !== null && usuarios.length === 0 && <p className="muted vacio">Sin usuarios registrados.</p>}
+      {usuarios !== null && usuarios.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead><tr><th>Nombre</th><th>Correo</th><th>Rol</th><th>Estatus</th></tr></thead>
+            <tbody>
+              {usuarios.map((u) => (
+                <tr key={u.id} onClick={() => setEditando(u)}>
+                  <td><strong>{u.nombre}</strong></td>
+                  <td className="muted">{u.email}</td>
+                  <td className="muted">{u.rol}</td>
+                  <td><span className={'badge ' + (u.activo ? 'completado' : 'inactivo')}>{u.activo ? 'Activo' : 'Inactivo'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -612,36 +659,44 @@ function UsuarioForm({ existente, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} />
       <h2>{existente ? existente.email : 'Agregar usuario'}</h2>
-      {!existente && (
-        <label className="campo"><span>Correo</span>
-          <input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="alguien@gmail.com" />
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        {!existente && (
+          <label className="expediente-fila"><span>Correo</span>
+            <input type="email" value={f.email} onChange={(e) => setF({ ...f, email: e.target.value })} placeholder="alguien@gmail.com" />
+          </label>
+        )}
+        <label className="expediente-fila"><span>Nombre</span>
+          <input value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} />
         </label>
-      )}
-      <label className="campo"><span>Nombre</span>
-        <input value={f.nombre} onChange={(e) => setF({ ...f, nombre: e.target.value })} />
-      </label>
-      <label className="campo"><span>Rol</span>
-        <select value={f.rol} onChange={(e) => setF({ ...f, rol: e.target.value })}>
-          <option value="chofer">chofer</option>
-          <option value="dispatch">dispatch</option>
-          <option value="taller">taller</option>
-          <option value="compras">compras</option>
-          <option value="admin">admin</option>
-        </select>
-      </label>
-      {existente && (
-        <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input type="checkbox" style={{ width: 'auto' }} checked={f.activo} onChange={(e) => setF({ ...f, activo: e.target.checked })} />
-          <span style={{ margin: 0 }}>Activo (puede iniciar sesión)</span>
+        <label className="expediente-fila"><span>Rol</span>
+          <select value={f.rol} onChange={(e) => setF({ ...f, rol: e.target.value })}>
+            <option value="chofer">chofer</option>
+            <option value="dispatch">dispatch</option>
+            <option value="taller">taller</option>
+            <option value="compras">compras</option>
+            <option value="admin">admin</option>
+          </select>
         </label>
-      )}
+        {existente && (
+          <label className="expediente-fila" style={{ gridTemplateColumns: '11rem auto' }}>
+            <span>Activo</span>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <input type="checkbox" style={{ width: 'auto' }} checked={f.activo} onChange={(e) => setF({ ...f, activo: e.target.checked })} />
+              <span>Puede iniciar sesión</span>
+            </span>
+          </label>
+        )}
+      </div>
       {existente && (
-        <button type="button" className="btn-secundario" disabled={cerrandoSesiones} onClick={cerrarSesiones}>
-          {cerrandoSesiones ? 'Cerrando…' : 'Cerrar sesión en todos los dispositivos'}
-        </button>
+        <div className="acciones">
+          <button type="button" className="btn-secundario" disabled={cerrandoSesiones} onClick={cerrarSesiones}>
+            {cerrandoSesiones ? 'Cerrando…' : 'Cerrar sesión en todos los dispositivos'}
+          </button>
+        </div>
       )}
     </div>
   )

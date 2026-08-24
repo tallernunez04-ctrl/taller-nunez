@@ -126,29 +126,38 @@ function Operadores() {
   const lista = (operadores ?? []).slice().sort((a, b) => a.nombre.localeCompare(b.nombre))
   return (
     <div>
-      <h2>Operadores</h2>
+      <div className="toolbar-lista">
+        <h2>Operadores</h2>
+        <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Agregar operador</button>
+      </div>
       {operadores === null && <p className="muted">Cargando…</p>}
       {operadores !== null && lista.length === 0 && (
-        <p className="muted vacio">Sin operadores registrados.<br />Toca + para agregar el primero.</p>
+        <p className="muted vacio">Sin operadores registrados.<br />Toca "+ Agregar operador" para el primero.</p>
       )}
-      {lista.map((o) => (
-        <button key={o.id} className="tarjeta" onClick={() => setEditando(o)}>
-          <div className="tarjeta-top">
-            <strong>{o.nombre}</strong>
-            <span className={'badge ' + (o.activo ? 'completado' : 'inactivo')}>{o.activo ? 'Activo' : 'Inactivo'}</span>
-          </div>
-          <div className="muted">
-            {o.telefono}
-            {o.unidadBaseId && ` · Unidad base: ${numeroDe[o.unidadBaseId] ?? o.unidadBaseId}`}
-          </div>
-          <div className="chips">
-            <BadgeVencimiento etiqueta="Licencia" fecha={o.licencia?.vence} />
-            <BadgeVencimiento etiqueta="Visa" fecha={o.visa?.vence} />
-            <BadgeVencimiento etiqueta="Apto médico" fecha={venceAptoMedico(o.aptoMedicoFecha)} />
-          </div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar operador">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Nombre</th><th>Teléfono</th><th>Unidad base</th><th>Vencimientos</th><th>Estatus</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((o) => (
+                <tr key={o.id} onClick={() => setEditando(o)}>
+                  <td><strong>{o.nombre}</strong></td>
+                  <td className="muted">{o.telefono || '—'}</td>
+                  <td className="muted">{o.unidadBaseId ? (numeroDe[o.unidadBaseId] ?? o.unidadBaseId) : '—'}</td>
+                  <td>
+                    <BadgeVencimiento etiqueta="Licencia" fecha={o.licencia?.vence} />{' '}
+                    <BadgeVencimiento etiqueta="Visa" fecha={o.visa?.vence} />{' '}
+                    <BadgeVencimiento etiqueta="Apto médico" fecha={venceAptoMedico(o.aptoMedicoFecha)} />
+                  </td>
+                  <td><span className={'badge ' + (o.activo ? 'completado' : 'inactivo')}>{o.activo ? 'Activo' : 'Inactivo'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -224,101 +233,96 @@ function OperadorForm({ operador, unidades, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar operador" />
       <h2>{operador ? operador.nombre : 'Nuevo operador'}</h2>
-      <label className="campo"><span>Nombre completo</span>
-        <input value={f.nombre} onChange={set('nombre')} />
-      </label>
-      <label className="campo"><span>Cuenta de login (para ver sus viajes/diésel)</span>
-        <select value={f.perfilId} onChange={set('perfilId')}>
-          <option value="">Sin vincular</option>
-          {perfiles.map((p) => <option key={p.id} value={p.id}>{p.email} ({p.rol})</option>)}
-        </select>
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>Teléfono</span>
+
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <label className="expediente-fila"><span>Nombre completo</span>
+          <input value={f.nombre} onChange={set('nombre')} />
+        </label>
+        <label className="expediente-fila"><span>Cuenta de login (para ver sus viajes/diésel)</span>
+          <select value={f.perfilId} onChange={set('perfilId')}>
+            <option value="">Sin vincular</option>
+            {perfiles.map((p) => <option key={p.id} value={p.id}>{p.email} ({p.rol})</option>)}
+          </select>
+        </label>
+        <label className="expediente-fila"><span>Teléfono</span>
           <input value={f.telefono} onChange={set('telefono')} inputMode="tel" />
         </label>
-        <label className="campo"><span>Correo (cuenta Google para la app)</span>
+        <label className="expediente-fila"><span>Correo (cuenta Google para la app)</span>
           <input type="email" value={f.email} onChange={set('email')} />
         </label>
-      </div>
-      <label className="campo"><span>Dirección</span>
-        <input value={f.direccion} onChange={set('direccion')} />
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>RFC</span>
+        <label className="expediente-fila"><span>Dirección</span>
+          <input value={f.direccion} onChange={set('direccion')} />
+        </label>
+        <label className="expediente-fila"><span>RFC</span>
           <input value={f.rfc} onChange={set('rfc')} />
         </label>
-        <label className="campo"><span>CURP</span>
+        <label className="expediente-fila"><span>CURP</span>
           <input value={f.curp} onChange={set('curp')} />
         </label>
       </div>
 
-      <h3>Documentos</h3>
-      <div className="fila-2">
-        <label className="campo"><span>Licencia (número)</span>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Documentos</div>
+        <label className="expediente-fila"><span>Licencia (número)</span>
           <input value={f.licencia.numero} onChange={setAnidado('licencia', 'numero')} />
         </label>
-        <label className="campo"><span>Licencia vence</span>
+        <label className="expediente-fila"><span>Licencia vence</span>
           <input type="date" value={f.licencia.vence} onChange={setAnidado('licencia', 'vence')} />
         </label>
-      </div>
-      <div className="fila-2">
-        <label className="campo"><span>Visa (número)</span>
+        <label className="expediente-fila"><span>Visa (número)</span>
           <input value={f.visa.numero} onChange={setAnidado('visa', 'numero')} />
         </label>
-        <label className="campo"><span>Visa vence</span>
+        <label className="expediente-fila"><span>Visa vence</span>
           <input type="date" value={f.visa.vence} onChange={setAnidado('visa', 'vence')} />
         </label>
+        <label className="expediente-fila"><span>Fecha del apto médico (vence al año)</span>
+          <input type="date" value={f.aptoMedicoFecha} onChange={set('aptoMedicoFecha')} />
+        </label>
+        {f.aptoMedicoFecha && (
+          <p className="muted tc-nota">Vence: {venceAptoMedico(f.aptoMedicoFecha)}</p>
+        )}
       </div>
-      <label className="campo"><span>Fecha del apto médico (vence al año)</span>
-        <input type="date" value={f.aptoMedicoFecha} onChange={set('aptoMedicoFecha')} />
-      </label>
-      {f.aptoMedicoFecha && (
-        <p className="muted tc-nota">Vence: {venceAptoMedico(f.aptoMedicoFecha)}</p>
-      )}
 
-      <h3>Contactos de emergencia</h3>
-      {cargandoContactos && <p className="muted">Cargando…</p>}
-      {f.contactosEmergencia.map((c, i) => (
-        <div key={i} className="linea">
-          <label className="campo"><span>Nombre</span>
-            <input value={c.nombre} onChange={setContacto(i, 'nombre')} />
-          </label>
-          <div className="fila-2">
-            <label className="campo"><span>Relación</span>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Contactos de emergencia</div>
+        {cargandoContactos && <p className="muted">Cargando…</p>}
+        {f.contactosEmergencia.map((c, i) => (
+          <label key={i} className="expediente-fila"><span>Contacto {i + 1}</span>
+            <div className="fila-3">
+              <input value={c.nombre} onChange={setContacto(i, 'nombre')} placeholder="Nombre" />
               <input value={c.relacion} onChange={setContacto(i, 'relacion')} placeholder="Esposa, hermano…" />
-            </label>
-            <label className="campo"><span>Teléfono</span>
-              <input value={c.telefono} onChange={setContacto(i, 'telefono')} inputMode="tel" />
-            </label>
-          </div>
-        </div>
-      ))}
-      {f.contactosEmergencia.length < 2 && (
-        <button type="button" className="btn-secundario btn-bloque"
-          onClick={() => setF({ ...f, contactosEmergencia: [...f.contactosEmergencia, contactoVacio()] })}>
-          + Agregar segundo contacto
-        </button>
-      )}
+              <input value={c.telefono} onChange={setContacto(i, 'telefono')} inputMode="tel" placeholder="Teléfono" />
+            </div>
+          </label>
+        ))}
+        {f.contactosEmergencia.length < 2 && (
+          <button type="button" className="btn-secundario btn-bloque"
+            onClick={() => setF({ ...f, contactosEmergencia: [...f.contactosEmergencia, contactoVacio()] })}>
+            + Agregar segundo contacto
+          </button>
+        )}
+      </div>
 
-      <h3>Asignación</h3>
-      <label className="campo"><span>Unidad base</span>
-        <select value={f.unidadBaseId} onChange={set('unidadBaseId')}>
-          <option value="">Sin unidad asignada</option>
-          {unidades.filter((u) => u.tipo === 'truck').map((u) => (
-            <option key={u.id} value={u.id}>{u.numero}</option>
-          ))}
-        </select>
-      </label>
-      <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-        <input type="checkbox" style={{ width: 'auto' }} checked={f.activo}
-          onChange={(e) => setF({ ...f, activo: e.target.checked })} />
-        <span style={{ margin: 0 }}>Activo</span>
-      </label>
-
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Asignación</div>
+        <label className="expediente-fila"><span>Unidad base</span>
+          <select value={f.unidadBaseId} onChange={set('unidadBaseId')}>
+            <option value="">Sin unidad asignada</option>
+            {unidades.filter((u) => u.tipo === 'truck').map((u) => (
+              <option key={u.id} value={u.id}>{u.numero}</option>
+            ))}
+          </select>
+        </label>
+        <label className="expediente-fila" style={{ gridTemplateColumns: '11rem auto' }}>
+          <span>Activo</span>
+          <input type="checkbox" style={{ width: 'auto' }} checked={f.activo}
+            onChange={(e) => setF({ ...f, activo: e.target.checked })} />
+        </label>
+      </div>
     </div>
   )
 }
@@ -338,21 +342,34 @@ function Clientes() {
   const lista = (clientes ?? []).slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return (
     <div>
-      <h2>Clientes</h2>
+      <div className="toolbar-lista">
+        <h2>Clientes</h2>
+        <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Agregar cliente</button>
+      </div>
       {clientes === null && <p className="muted">Cargando…</p>}
       {clientes !== null && lista.length === 0 && (
-        <p className="muted vacio">Sin clientes registrados.<br />Toca + para agregar el primero.</p>
+        <p className="muted vacio">Sin clientes registrados.<br />Toca "+ Agregar cliente" para el primero.</p>
       )}
-      {lista.map((c) => (
-        <button key={c.id} className="tarjeta" onClick={() => setEditando(c)}>
-          <div className="tarjeta-top">
-            <strong>{c.razonSocial}</strong>
-            <span className="muted">{c.diasCredito ? `${c.diasCredito} días crédito` : 'Contado'}</span>
-          </div>
-          <div className="muted">{[c.contacto, c.telefono, c.rfc].filter(Boolean).join(' · ')}</div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar cliente">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Razón social</th><th>Contacto</th><th>Teléfono</th><th>RFC</th><th>Crédito</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((c) => (
+                <tr key={c.id} onClick={() => setEditando(c)}>
+                  <td><strong>{c.razonSocial}</strong></td>
+                  <td className="muted">{c.contacto || '—'}</td>
+                  <td className="muted">{c.telefono || '—'}</td>
+                  <td className="muted">{c.rfc || '—'}</td>
+                  <td className="muted">{c.diasCredito ? `${c.diasCredito} días` : 'Contado'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -417,78 +434,79 @@ function ClienteForm({ cliente, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar cliente" />
       <h2>{cliente ? cliente.razonSocial : 'Nuevo cliente'}</h2>
-      <label className="campo"><span>Razón social</span>
-        <input value={f.razonSocial} onChange={set('razonSocial')} />
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>Contacto</span>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <label className="expediente-fila"><span>Razón social</span>
+          <input value={f.razonSocial} onChange={set('razonSocial')} />
+        </label>
+        <label className="expediente-fila"><span>Contacto</span>
           <input value={f.contacto} onChange={set('contacto')} />
         </label>
-        <label className="campo"><span>RFC</span>
+        <label className="expediente-fila"><span>RFC</span>
           <input value={f.rfc} onChange={set('rfc')} />
         </label>
-      </div>
-      <div className="fila-2">
-        <label className="campo"><span>Teléfono</span>
+        <label className="expediente-fila"><span>Teléfono</span>
           <input value={f.telefono} onChange={set('telefono')} inputMode="tel" />
         </label>
-        <label className="campo"><span>Correo</span>
+        <label className="expediente-fila"><span>Correo</span>
           <input type="email" value={f.correo} onChange={set('correo')} />
         </label>
+        <label className="expediente-fila"><span>Días de crédito autorizados</span>
+          <input type="number" inputMode="numeric" min="0" value={f.diasCredito} onChange={set('diasCredito')} />
+        </label>
       </div>
-      <label className="campo"><span>Días de crédito autorizados</span>
-        <input type="number" inputMode="numeric" min="0" value={f.diasCredito} onChange={set('diasCredito')} />
-      </label>
 
       {cliente && (
-        <>
-          <h3>Direcciones</h3>
-          {direcciones.map((d) => (
-            <div key={d.id} className="tarjeta detalle">
-              <div className="tarjeta-top">
-                <span>{direccionTexto(d)}</span>
-                <span>
-                  <button type="button" className="btn-borrar" aria-label="Editar" onClick={() => setDirForm(d)}>✏️</button>
-                  <button type="button" className="btn-borrar" aria-label="Eliminar" onClick={() => borrarDireccion(d.id)}>🗑</button>
-                </span>
-              </div>
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo">Direcciones</div>
+          {direcciones.length > 0 && (
+            <div className="tabla-scroll">
+              <table className="tabla-densa">
+                <tbody>
+                  {direcciones.map((d) => (
+                    <tr key={d.id}>
+                      <td>{direccionTexto(d)}</td>
+                      <td className="num">
+                        <button type="button" className="btn-borrar" aria-label="Editar" onClick={() => setDirForm(d)}>✏️</button>
+                        <button type="button" className="btn-borrar" aria-label="Eliminar" onClick={() => borrarDireccion(d.id)}>🗑</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
           {dirForm ? (
-            <div className="linea">
-              <label className="campo"><span>Calle y número</span>
+            <>
+              <label className="expediente-fila"><span>Calle y número</span>
                 <input value={dirForm.calle} onChange={(e) => setDirForm({ ...dirForm, calle: e.target.value })} />
               </label>
-              <div className="fila-2">
-                <label className="campo"><span>Ciudad</span>
-                  <input value={dirForm.ciudad} onChange={(e) => setDirForm({ ...dirForm, ciudad: e.target.value })} />
-                </label>
-                <label className="campo"><span>Estado</span>
-                  <input value={dirForm.estado} onChange={(e) => setDirForm({ ...dirForm, estado: e.target.value })} />
-                </label>
-              </div>
-              <div className="fila-2">
-                <label className="campo"><span>País</span>
-                  <input value={dirForm.pais} onChange={(e) => setDirForm({ ...dirForm, pais: e.target.value })} />
-                </label>
-                <label className="campo"><span>Código postal</span>
-                  <input value={dirForm.cp} onChange={(e) => setDirForm({ ...dirForm, cp: e.target.value })} inputMode="numeric" />
-                </label>
-              </div>
-              <div className="acciones">
+              <label className="expediente-fila"><span>Ciudad</span>
+                <input value={dirForm.ciudad} onChange={(e) => setDirForm({ ...dirForm, ciudad: e.target.value })} />
+              </label>
+              <label className="expediente-fila"><span>Estado</span>
+                <input value={dirForm.estado} onChange={(e) => setDirForm({ ...dirForm, estado: e.target.value })} />
+              </label>
+              <label className="expediente-fila"><span>País</span>
+                <input value={dirForm.pais} onChange={(e) => setDirForm({ ...dirForm, pais: e.target.value })} />
+              </label>
+              <label className="expediente-fila"><span>Código postal</span>
+                <input value={dirForm.cp} onChange={(e) => setDirForm({ ...dirForm, cp: e.target.value })} inputMode="numeric" />
+              </label>
+              <div className="acciones" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
                 <button className="btn-primario" onClick={guardarDireccion}>Guardar dirección</button>
                 <button className="btn-secundario" onClick={() => setDirForm(null)}>Cancelar</button>
               </div>
-            </div>
+            </>
           ) : (
             <button type="button" className="btn-secundario btn-bloque" onClick={() => setDirForm(direccionVacia())}>
               + Agregar dirección
             </button>
           )}
-        </>
+        </div>
       )}
       {!cliente && <p className="muted">Guarda el cliente para poder agregar direcciones.</p>}
     </div>
@@ -513,21 +531,33 @@ function Proveedores() {
   const lista = (proveedores ?? []).slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return (
     <div>
-      <h2>Proveedores</h2>
+      <div className="toolbar-lista">
+        <h2>Proveedores</h2>
+        <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Agregar proveedor</button>
+      </div>
       {proveedores === null && <p className="muted">Cargando…</p>}
       {proveedores !== null && lista.length === 0 && (
-        <p className="muted vacio">Sin proveedores registrados.<br />Toca + para agregar el primero.</p>
+        <p className="muted vacio">Sin proveedores registrados.<br />Toca "+ Agregar proveedor" para el primero.</p>
       )}
-      {lista.map((p) => (
-        <button key={p.id} className="tarjeta" onClick={() => setEditando(p)}>
-          <div className="tarjeta-top">
-            <strong>{p.razonSocial}</strong>
-            <span className="muted">{p.diasCredito ? `${p.diasCredito} días crédito` : 'Contado'}</span>
-          </div>
-          <div className="muted">{[p.rfc, p.banco?.nombre].filter(Boolean).join(' · ')}</div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar proveedor">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Razón social</th><th>RFC</th><th>Banco</th><th>Crédito</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((p) => (
+                <tr key={p.id} onClick={() => setEditando(p)}>
+                  <td><strong>{p.razonSocial}</strong></td>
+                  <td className="muted">{p.rfc || '—'}</td>
+                  <td className="muted">{p.banco?.nombre || '—'}</td>
+                  <td className="muted">{p.diasCredito ? `${p.diasCredito} días` : 'Contado'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -561,29 +591,30 @@ function ProveedorForm({ proveedor, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar proveedor" />
       <h2>{proveedor ? proveedor.razonSocial : 'Nuevo proveedor'}</h2>
-      <label className="campo"><span>Razón social</span>
-        <input value={f.razonSocial} onChange={set('razonSocial')} />
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>RFC</span>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <label className="expediente-fila"><span>Razón social</span>
+          <input value={f.razonSocial} onChange={set('razonSocial')} />
+        </label>
+        <label className="expediente-fila"><span>RFC</span>
           <input value={f.rfc} onChange={set('rfc')} />
         </label>
-        <label className="campo"><span>Días de crédito</span>
+        <label className="expediente-fila"><span>Días de crédito</span>
           <input type="number" inputMode="numeric" min="0" value={f.diasCredito} onChange={set('diasCredito')} />
         </label>
       </div>
-      <h3>Datos bancarios</h3>
-      <label className="campo"><span>Banco</span>
-        <input value={f.banco.nombre} onChange={setBanco('nombre')} />
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>CLABE</span>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos bancarios</div>
+        <label className="expediente-fila"><span>Banco</span>
+          <input value={f.banco.nombre} onChange={setBanco('nombre')} />
+        </label>
+        <label className="expediente-fila"><span>CLABE</span>
           <input value={f.banco.clabe} onChange={setBanco('clabe')} inputMode="numeric" />
         </label>
-        <label className="campo"><span>Cuenta</span>
+        <label className="expediente-fila"><span>Cuenta</span>
           <input value={f.banco.cuenta} onChange={setBanco('cuenta')} inputMode="numeric" />
         </label>
       </div>
@@ -623,28 +654,31 @@ function Tabulador() {
   const lista = (tramos ?? []).slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino))
   return (
     <div>
-      <h2>Tabulador de rutas</h2>
+      <div className="toolbar-lista">
+        <h2>Tabulador de rutas</h2>
+        {!f && (
+          <button type="button" className="btn-primario" onClick={() => setF({ origen: '', destino: '', pagoChofer: '', km: '' })}>
+            + Agregar tramo
+          </button>
+        )}
+      </div>
       <p className="muted">Pago al chofer por tramo origen → destino. Se usa en el costeo de viajes y en nómina.</p>
 
       {f && (
-        <div className="linea">
-          <div className="fila-2">
-            <label className="campo"><span>Origen</span>
-              <input value={f.origen} onChange={set('origen')} placeholder="Cd. Juárez" />
-            </label>
-            <label className="campo"><span>Destino</span>
-              <input value={f.destino} onChange={set('destino')} placeholder="Monterrey" />
-            </label>
-          </div>
-          <div className="fila-2">
-            <label className="campo"><span>Pago al chofer (USD)</span>
-              <input type="number" inputMode="decimal" min="0" step="0.01" value={f.pagoChofer} onChange={set('pagoChofer')} />
-            </label>
-            <label className="campo"><span>Km del tramo (opcional)</span>
-              <input type="number" inputMode="numeric" min="0" value={f.km} onChange={set('km')} />
-            </label>
-          </div>
-          <div className="acciones">
+        <div className="expediente-seccion">
+          <label className="expediente-fila"><span>Origen</span>
+            <input value={f.origen} onChange={set('origen')} placeholder="Cd. Juárez" />
+          </label>
+          <label className="expediente-fila"><span>Destino</span>
+            <input value={f.destino} onChange={set('destino')} placeholder="Monterrey" />
+          </label>
+          <label className="expediente-fila"><span>Pago al chofer (USD)</span>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={f.pagoChofer} onChange={set('pagoChofer')} />
+          </label>
+          <label className="expediente-fila"><span>Km del tramo (opcional)</span>
+            <input type="number" inputMode="numeric" min="0" value={f.km} onChange={set('km')} />
+          </label>
+          <div className="acciones" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
             <button className="btn-primario" onClick={guardar}>Guardar tramo</button>
             <button className="btn-secundario" onClick={() => setF(null)}>Cancelar</button>
           </div>
@@ -653,11 +687,11 @@ function Tabulador() {
 
       {tramos === null && <p className="muted">Cargando…</p>}
       {tramos !== null && lista.length === 0 && !f && (
-        <p className="muted vacio">Sin tramos registrados.<br />Toca + para agregar el primero.</p>
+        <p className="muted vacio">Sin tramos registrados.<br />Toca "+ Agregar tramo" para el primero.</p>
       )}
       {lista.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr><th>Origen</th><th>Destino</th><th className="num">Pago chofer</th><th className="num">Km</th><th></th></tr>
             </thead>
@@ -678,7 +712,6 @@ function Tabulador() {
           </table>
         </div>
       )}
-      {!f && <button className="fab" onClick={() => setF({ origen: '', destino: '', pagoChofer: '', km: '' })} aria-label="Agregar tramo">+</button>}
     </div>
   )
 }
@@ -699,18 +732,28 @@ function Gasolineras() {
   const lista = (gasolineras ?? []).slice().sort((a, b) => a.razonSocial.localeCompare(b.razonSocial))
   return (
     <div>
-      <h2>Gasolineras</h2>
+      <div className="toolbar-lista">
+        <h2>Gasolineras</h2>
+        <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Agregar gasolinera</button>
+      </div>
       <p className="muted">Empresas con convenio y sus estaciones de servicio. El chofer elige de aquí al cargar diésel.</p>
       {gasolineras === null && <p className="muted">Cargando…</p>}
       {gasolineras !== null && lista.length === 0 && (
-        <p className="muted vacio">Sin gasolineras registradas.<br />Toca + para agregar la primera.</p>
+        <p className="muted vacio">Sin gasolineras registradas.<br />Toca "+ Agregar gasolinera" para la primera.</p>
       )}
-      {lista.map((g) => (
-        <button key={g.id} className="tarjeta" onClick={() => setEditando(g)}>
-          <strong>{g.razonSocial}</strong>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Agregar gasolinera">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <tbody>
+              {lista.map((g) => (
+                <tr key={g.id} onClick={() => setEditando(g)}>
+                  <td><strong>{g.razonSocial}</strong></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -769,48 +812,54 @@ function GasolineraForm({ gasolinera, onDone }) {
   }
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarLabel="Guardar gasolinera" />
       <h2>{gasolinera ? gasolinera.razonSocial : 'Nueva gasolinera'}</h2>
-      <label className="campo"><span>Razón social</span>
-        <input value={f.razonSocial} onChange={set('razonSocial')} />
-      </label>
+      <div className="expediente-seccion">
+        <label className="expediente-fila"><span>Razón social</span>
+          <input value={f.razonSocial} onChange={set('razonSocial')} />
+        </label>
+      </div>
 
       {gasolinera && (
-        <>
-          <h3>Estaciones de servicio</h3>
-          {estaciones.map((e) => (
-            <div key={e.id} className="tarjeta detalle">
-              <div className="tarjeta-top">
-                <span>{[e.alias, e.ciudad].filter(Boolean).join(' · ')}</span>
-                <span>
-                  <button type="button" className="btn-borrar" aria-label="Editar" onClick={() => setEstForm(e)}>✏️</button>
-                  <button type="button" className="btn-borrar" aria-label="Eliminar" onClick={() => borrarEstacion(e.id)}>🗑</button>
-                </span>
-              </div>
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo">Estaciones de servicio</div>
+          {estaciones.length > 0 && (
+            <div className="tabla-scroll">
+              <table className="tabla-densa">
+                <tbody>
+                  {estaciones.map((e) => (
+                    <tr key={e.id}>
+                      <td>{[e.alias, e.ciudad].filter(Boolean).join(' · ')}</td>
+                      <td className="num">
+                        <button type="button" className="btn-borrar" aria-label="Editar" onClick={() => setEstForm(e)}>✏️</button>
+                        <button type="button" className="btn-borrar" aria-label="Eliminar" onClick={() => borrarEstacion(e.id)}>🗑</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
+          )}
           {estForm ? (
-            <div className="linea">
-              <div className="fila-2">
-                <label className="campo"><span>Alias</span>
-                  <input value={estForm.alias} onChange={(e) => setEstForm({ ...estForm, alias: e.target.value })} placeholder="Ej. La de la curva" />
-                </label>
-                <label className="campo"><span>Ciudad</span>
-                  <input value={estForm.ciudad} onChange={(e) => setEstForm({ ...estForm, ciudad: e.target.value })} />
-                </label>
-              </div>
-              <div className="acciones">
+            <>
+              <label className="expediente-fila"><span>Alias</span>
+                <input value={estForm.alias} onChange={(e) => setEstForm({ ...estForm, alias: e.target.value })} placeholder="Ej. La de la curva" />
+              </label>
+              <label className="expediente-fila"><span>Ciudad</span>
+                <input value={estForm.ciudad} onChange={(e) => setEstForm({ ...estForm, ciudad: e.target.value })} />
+              </label>
+              <div className="acciones" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
                 <button className="btn-primario" onClick={guardarEstacion}>Guardar estación</button>
                 <button className="btn-secundario" onClick={() => setEstForm(null)}>Cancelar</button>
               </div>
-            </div>
+            </>
           ) : (
             <button type="button" className="btn-secundario btn-bloque" onClick={() => setEstForm(estacionVacia())}>
               + Agregar estación
             </button>
           )}
-        </>
+        </div>
       )}
       {!gasolinera && <p className="muted">Guarda la gasolinera para poder agregar estaciones.</p>}
     </div>

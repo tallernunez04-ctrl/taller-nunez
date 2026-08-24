@@ -196,7 +196,7 @@ function Rentabilidad({ mes }) {
       {filas.length === 0 && <p className="muted">Sin movimientos en el mes.</p>}
       {filas.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr>
                 <th>Unidad</th><th className="num">Viajes</th><th className="num">Ingreso</th>

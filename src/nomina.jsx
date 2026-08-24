@@ -102,39 +102,37 @@ function Empleados() {
 
   if (f) {
     return (
-      <div>
+      <div className="expediente">
         <BarraAcciones onAtras={() => setF(null)} onGuardar={guardar} />
         <h2>{f.id ? f.nombre : 'Nuevo empleado'}</h2>
         <p className="muted">Los choferes no van aquí: se pagan por viaje desde el catálogo de Operadores.</p>
-        <label className="campo"><span>Nombre</span>
-          <input value={f.nombre} onChange={set('nombre')} />
-        </label>
-        <div className="fila-2">
-          <label className="campo"><span>Tipo</span>
+        <div className="expediente-seccion">
+          <label className="expediente-fila"><span>Nombre</span>
+            <input value={f.nombre} onChange={set('nombre')} />
+          </label>
+          <label className="expediente-fila"><span>Tipo</span>
             <select value={f.tipo} onChange={set('tipo')}>
               <option value="mecanico">Mecánico</option>
               <option value="administrativo">Administrativo</option>
             </select>
           </label>
-          <label className="campo"><span>Correo (para ligar sus WO)</span>
+          <label className="expediente-fila"><span>Correo (para ligar sus WO)</span>
             <input type="email" value={f.email} onChange={set('email')} />
           </label>
-        </div>
-        <div className="fila-2">
-          <label className="campo"><span>Sueldo semanal (USD)</span>
+          <label className="expediente-fila"><span>Sueldo semanal (USD)</span>
             <input type="number" inputMode="decimal" min="0" step="0.01" value={f.sueldoSemanal} onChange={set('sueldoSemanal')} />
           </label>
           {f.tipo === 'mecanico' && (
-            <label className="campo"><span>Bono por WO completada (USD)</span>
+            <label className="expediente-fila"><span>Bono por WO completada (USD)</span>
               <input type="number" inputMode="decimal" min="0" step="0.01" value={f.bonoPorWO} onChange={set('bonoPorWO')} />
             </label>
           )}
+          <label className="expediente-fila" style={{ gridTemplateColumns: '11rem auto' }}>
+            <span>Activo</span>
+            <input type="checkbox" style={{ width: 'auto' }} checked={f.activo}
+              onChange={(e) => setF({ ...f, activo: e.target.checked })} />
+          </label>
         </div>
-        <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <input type="checkbox" style={{ width: 'auto' }} checked={f.activo}
-            onChange={(e) => setF({ ...f, activo: e.target.checked })} />
-          <span style={{ margin: 0 }}>Activo</span>
-        </label>
       </div>
     )
   }
@@ -142,24 +140,34 @@ function Empleados() {
   const lista = (empleados ?? []).slice().sort((a, b) => a.nombre.localeCompare(b.nombre))
   return (
     <div>
-      <h2>Empleados</h2>
+      <div className="toolbar-lista">
+        <h2>Empleados</h2>
+        <button type="button" className="btn-primario" onClick={() => setF(empleadoVacio())}>+ Agregar empleado</button>
+      </div>
       {empleados === null && <p className="muted">Cargando…</p>}
       {empleados !== null && lista.length === 0 && (
         <p className="muted vacio">Sin empleados registrados.<br />Aquí van mecánicos y administrativos.</p>
       )}
-      {lista.map((emp) => (
-        <button key={emp.id} className="tarjeta" onClick={() => setF(emp)}>
-          <div className="tarjeta-top">
-            <strong>{emp.nombre}</strong>
-            <span className={'badge ' + (emp.activo ? 'completado' : 'inactivo')}>{emp.activo ? 'Activo' : 'Inactivo'}</span>
-          </div>
-          <div className="muted">
-            {emp.tipo === 'mecanico' ? 'Mecánico' : 'Administrativo'} · {dinero(emp.sueldoSemanal, 'USD')}/sem
-            {emp.tipo === 'mecanico' && emp.bonoPorWO > 0 && ` · bono ${dinero(emp.bonoPorWO, 'USD')}/WO`}
-          </div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setF(empleadoVacio())} aria-label="Agregar empleado">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Nombre</th><th>Tipo</th><th className="num">Sueldo semanal</th><th className="num">Bono/WO</th><th>Estatus</th></tr>
+            </thead>
+            <tbody>
+              {lista.map((emp) => (
+                <tr key={emp.id} onClick={() => setF(emp)}>
+                  <td><strong>{emp.nombre}</strong></td>
+                  <td className="muted">{emp.tipo === 'mecanico' ? 'Mecánico' : 'Administrativo'}</td>
+                  <td className="num">{dinero(emp.sueldoSemanal, 'USD')}</td>
+                  <td className="num">{emp.tipo === 'mecanico' && emp.bonoPorWO > 0 ? dinero(emp.bonoPorWO, 'USD') : '—'}</td>
+                  <td><span className={'badge ' + (emp.activo ? 'completado' : 'inactivo')}>{emp.activo ? 'Activo' : 'Inactivo'}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -179,23 +187,34 @@ function Cortes() {
 
   return (
     <div>
-      <h2>Cortes de nómina</h2>
+      <div className="toolbar-lista">
+        <h2>Cortes de nómina</h2>
+        <button type="button" className="btn-primario" onClick={() => setNueva(true)}>+ Nuevo corte</button>
+      </div>
       {nominas === null && <p className="muted">Cargando…</p>}
       {nominas !== null && nominas.length === 0 && (
-        <p className="muted vacio">Sin cortes de nómina.<br />Toca + para generar el primero.</p>
+        <p className="muted vacio">Sin cortes de nómina.<br />Toca "+ Nuevo corte" para generar el primero.</p>
       )}
-      {(nominas ?? []).map((n) => (
-        <button key={n.id} className="tarjeta" onClick={() => setDetalle(n)}>
-          <div className="tarjeta-top">
-            <strong>{n.periodo.del} → {n.periodo.al}</strong>
-            <span className={'badge ' + (n.estatus === 'pagada' ? 'completado' : 'en_proceso')}>{ESTADO_NOMINA[n.estatus]}</span>
-          </div>
-          <div className="muted">
-            {n.periodo.tipo === 'semanal' ? 'Semanal' : 'Quincenal'} · {n.numEmpleados} empleados · <strong>{dinero(n.totalGeneral, 'USD')}</strong>
-          </div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setNueva(true)} aria-label="Nuevo corte">+</button>
+      {nominas?.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Periodo</th><th>Tipo</th><th className="num">Empleados</th><th className="num">Total</th><th>Estatus</th></tr>
+            </thead>
+            <tbody>
+              {nominas.map((n) => (
+                <tr key={n.id} onClick={() => setDetalle(n)}>
+                  <td><strong>{n.periodo.del} → {n.periodo.al}</strong></td>
+                  <td className="muted">{n.periodo.tipo === 'semanal' ? 'Semanal' : 'Quincenal'}</td>
+                  <td className="num">{n.numEmpleados}</td>
+                  <td className="num">{dinero(n.totalGeneral, 'USD')}</td>
+                  <td><span className={'badge ' + (n.estatus === 'pagada' ? 'completado' : 'en_proceso')}>{ESTADO_NOMINA[n.estatus]}</span></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -319,17 +338,17 @@ function NuevoCorte({ onDone }) {
           : <button type="button" className="btn-primario" onClick={calcular}>Calcular nómina</button>}
       />
       <h2>Nuevo corte de nómina</h2>
-      <label className="campo"><span>Periodicidad</span>
-        <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
-          <option value="semanal">Semanal</option>
-          <option value="quincenal">Quincenal</option>
-        </select>
-      </label>
-      <div className="fila-2">
-        <label className="campo"><span>Del</span>
+      <div className="expediente-seccion">
+        <label className="expediente-fila"><span>Periodicidad</span>
+          <select value={tipo} onChange={(e) => setTipo(e.target.value)}>
+            <option value="semanal">Semanal</option>
+            <option value="quincenal">Quincenal</option>
+          </select>
+        </label>
+        <label className="expediente-fila"><span>Del</span>
           <input type="date" value={del} onChange={(e) => setDel(e.target.value)} />
         </label>
-        <label className="campo"><span>Al</span>
+        <label className="expediente-fila"><span>Al</span>
           <input type="date" value={al} onChange={(e) => setAl(e.target.value)} />
         </label>
       </div>
@@ -339,7 +358,7 @@ function NuevoCorte({ onDone }) {
           {preview.length === 0 && <p className="muted">Nada que pagar en este periodo.</p>}
           {preview.length > 0 && (
             <div className="tabla-scroll">
-              <table>
+              <table className="tabla-densa">
                 <thead>
                   <tr>
                     <th>Empleado</th><th>Tipo</th><th className="num">Viajes/WOs</th>

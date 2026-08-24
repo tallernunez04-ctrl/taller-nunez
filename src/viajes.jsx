@@ -341,7 +341,7 @@ function DashboardClientes() {
         <p className="muted vacio">Sin viajes en el rango seleccionado.</p>
       ) : (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr>
                 <th>Cliente</th><th>Viaje</th><th>Origen</th><th>Destino</th>
@@ -388,7 +388,10 @@ function ListaViajes({ usuario }) {
 
   return (
     <div>
-      <h2>Viajes</h2>
+      <div className="toolbar-lista">
+        <h2>Viajes</h2>
+        <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Nuevo viaje</button>
+      </div>
       <div className="filtros">
         <select value={fEstatus} onChange={(e) => setFEstatus(e.target.value)}>
           <option value="en_proceso">En proceso</option>
@@ -399,26 +402,38 @@ function ListaViajes({ usuario }) {
       </div>
       {viajes === null && <p className="muted">Cargando…</p>}
       {viajes !== null && lista.length === 0 && (
-        <p className="muted vacio">No hay viajes con este filtro.<br />Toca + para crear uno nuevo.</p>
+        <p className="muted vacio">No hay viajes con este filtro.<br />Toca "+ Nuevo viaje" para crear uno.</p>
       )}
-      {lista.map((v) => (
-        <button key={v.id} className="tarjeta" onClick={() => setEditando(v)}>
-          <div className="tarjeta-top">
-            <strong>{v.folio}</strong>
-            <span className={'badge ' + (v.estatus === 'en_proceso' ? 'en_proceso' : 'completado')}>
-              {estatusLabel(v)}
-            </span>
-          </div>
-          <div className="muted">{v.fecha} · {v.clienteNombre} · Unidad <strong>{v.unidadNumero}</strong></div>
-          <div className="muted">{v.origen} → {v.destino} · {v.operadorNombre}{v.operadorProvisional ? ' (provisional)' : ''}</div>
-          <div className="muted">
-            {usuario?.rol === 'admin' && `Ingreso ${dinero(v.precio, 'USD')} · `}
-            Costeo est. {dinero(v.costeoEstimado?.total, 'USD')}
-            {v.entregasPendientes > 0 && ` · ${v.entregasPendientes} entrega(s) pendiente(s)`}
-          </div>
-        </button>
-      ))}
-      <button className="fab" onClick={() => setEditando('nuevo')} aria-label="Nuevo viaje">+</button>
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr>
+                <th>Folio</th><th>Fecha</th><th>Cliente</th><th>Unidad</th><th>Ruta</th><th>Operador</th>
+                <th>Estatus</th>{usuario?.rol === 'admin' && <th className="num">Ingreso</th>}<th className="num">Costeo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lista.map((v) => (
+                <tr key={v.id} onClick={() => setEditando(v)}>
+                  <td><strong>{v.folio}</strong></td>
+                  <td className="muted">{v.fecha}</td>
+                  <td>{v.clienteNombre}</td>
+                  <td>{v.unidadNumero}</td>
+                  <td className="muted">{v.origen} → {v.destino}</td>
+                  <td className="muted">{v.operadorNombre}{v.operadorProvisional ? ' (provisional)' : ''}</td>
+                  <td>
+                    <span className={'badge ' + (v.estatus === 'en_proceso' ? 'en_proceso' : 'completado')}>{estatusLabel(v)}</span>
+                    {v.entregasPendientes > 0 && <span className="muted"> · {v.entregasPendientes} pend.</span>}
+                  </td>
+                  {usuario?.rol === 'admin' && <td className="num">{dinero(v.precio, 'USD')}</td>}
+                  <td className="num">{dinero(v.costeoEstimado?.total, 'USD')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }
@@ -438,7 +453,7 @@ const cargaVacia = () => ({ clienteId: '', direccionCargaId: '' })
 function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
   return (
     <>
-      <label className="campo"><span>Cliente</span>
+      <label className="expediente-fila"><span>Cliente</span>
         <select
           value={e.clienteId}
           onChange={(ev) => { cargarDirs(ev.target.value); onChange({ ...e, clienteId: ev.target.value, direccionEntregaId: '' }) }}
@@ -449,7 +464,7 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
           ))}
         </select>
       </label>
-      <label className="campo"><span>Dirección de entrega</span>
+      <label className="expediente-fila"><span>Dirección de entrega</span>
         <select value={e.direccionEntregaId} onChange={(ev) => onChange({ ...e, direccionEntregaId: ev.target.value })}>
           <option value="">Selecciona…</option>
           {(dirs[e.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
@@ -464,7 +479,7 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
 function CargaCampos({ c, onChange, clientes, dirs, cargarDirs }) {
   return (
     <>
-      <label className="campo"><span>Cliente</span>
+      <label className="expediente-fila"><span>Cliente</span>
         <select
           value={c.clienteId}
           onChange={(ev) => { cargarDirs(ev.target.value); onChange({ ...c, clienteId: ev.target.value, direccionCargaId: '' }) }}
@@ -475,7 +490,7 @@ function CargaCampos({ c, onChange, clientes, dirs, cargarDirs }) {
           ))}
         </select>
       </label>
-      <label className="campo"><span>Dirección de carga</span>
+      <label className="expediente-fila"><span>Dirección de carga</span>
         <select value={c.direccionCargaId} onChange={(ev) => onChange({ ...c, direccionCargaId: ev.target.value })}>
           <option value="">Selecciona…</option>
           {(dirs[c.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
@@ -656,7 +671,7 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const enProceso = !viaje || viaje.estatus === 'en_proceso'
 
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones
         onAtras={onDone}
         onGuardar={soloLectura ? undefined : guardar}
@@ -678,78 +693,91 @@ function ViajeForm({ viaje, usuario, onDone }) {
       />
       <h2>{viaje ? `Viaje ${viaje.folio}` : 'Nuevo viaje'}</h2>
       {soloLectura && <p className="muted">Viaje conciliado en nómina — solo lectura.</p>}
-      <label className="campo"><span>Fecha</span>
-        <input type="date" value={f.fecha} onChange={set('fecha')} />
-      </label>
 
-      {/* custodia: en alta se captura el movimiento inicial; en edición solo se muestra y se cambia por transacción */}
-      {!viaje && (
-        <>
-          <SelectorUnidad
-            unidades={unidades.filter((u) => u.tipo === 'truck')}
-            value={f.unidadId}
-            onChange={elegirUnidad}
-            placeholder="Selecciona unidad…"
-          />
-          <label className="campo"><span>Caja / plataforma (opcional)</span>
-            <select value={f.cajaId} onChange={set('cajaId')}>
-              <option value="">Sin caja</option>
-              {unidades.filter((u) => u.tipo !== 'truck').map((u) => (
-                <option key={u.id} value={u.id}>{u.numero} ({u.tipo})</option>
-              ))}
-            </select>
-          </label>
-          <label className="campo"><span>Operador</span>
-            <select value={f.operadorId} onChange={set('operadorId')}>
-              <option value="">Selecciona operador…</option>
-              {operadores.filter((o) => o.activo).sort((a, b) => a.nombre.localeCompare(b.nombre)).map((o) => (
-                <option key={o.id} value={o.id}>
-                  {o.nombre}{o.unidadBaseId === f.unidadId ? ' (base)' : ''}
-                </option>
-              ))}
-            </select>
-          </label>
-          {operadorBase && f.operadorId && f.operadorId !== operadorBase.id && (
-            <p className="muted tc-nota">Asignación provisional — la unidad base de {operadorBase.nombre} no se modifica.</p>
-          )}
-        </>
-      )}
-      {viaje && (
-        <div className="tarjeta detalle">
-          <div className="tarjeta-top">
-            <strong>Custodia actual</strong>
-            {enProceso && !soloLectura && (
-              <button className="btn-secundario" onClick={() => setModalCambio(true)}>Registrar cambio de chofer/unidad</button>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Datos generales</div>
+        <label className="expediente-fila"><span>Fecha</span>
+          <input type="date" value={f.fecha} onChange={set('fecha')} />
+        </label>
+
+        {/* custodia: en alta se captura el movimiento inicial; en edición solo se muestra y se cambia por transacción */}
+        {!viaje && (
+          <>
+            <SelectorUnidad
+              expediente
+              unidades={unidades.filter((u) => u.tipo === 'truck')}
+              value={f.unidadId}
+              onChange={elegirUnidad}
+              placeholder="Selecciona unidad…"
+            />
+            <label className="expediente-fila"><span>Caja / plataforma (opcional)</span>
+              <select value={f.cajaId} onChange={set('cajaId')}>
+                <option value="">Sin caja</option>
+                {unidades.filter((u) => u.tipo !== 'truck').map((u) => (
+                  <option key={u.id} value={u.id}>{u.numero} ({u.tipo})</option>
+                ))}
+              </select>
+            </label>
+            <label className="expediente-fila"><span>Operador</span>
+              <select value={f.operadorId} onChange={set('operadorId')}>
+                <option value="">Selecciona operador…</option>
+                {operadores.filter((o) => o.activo).sort((a, b) => a.nombre.localeCompare(b.nombre)).map((o) => (
+                  <option key={o.id} value={o.id}>
+                    {o.nombre}{o.unidadBaseId === f.unidadId ? ' (base)' : ''}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {operadorBase && f.operadorId && f.operadorId !== operadorBase.id && (
+              <p className="muted tc-nota">Asignación provisional — la unidad base de {operadorBase.nombre} no se modifica.</p>
             )}
+          </>
+        )}
+        {viaje && (
+          <div className="expediente-fila">
+            <span>Custodia actual</span>
+            <div>
+              Chofer: <strong>{viaje.choferActualNombre}</strong>
+              {' · '}Camión: <strong>{viaje.camionActualNumero}</strong>
+              {viaje.cajaNumero && <> · Caja: <strong>{viaje.cajaNumero}</strong></>}
+              {viaje.kmTotales > 0 && <div className="muted">Km recorridos (movimientos): {viaje.kmTotales.toLocaleString()}</div>}
+              {enProceso && !soloLectura && (
+                <div><button type="button" className="btn-secundario" onClick={() => setModalCambio(true)}>Registrar cambio de chofer/unidad</button></div>
+              )}
+            </div>
           </div>
-          <p>
-            Chofer: <strong>{viaje.choferActualNombre}</strong>
-            {' · '}Camión: <strong>{viaje.camionActualNumero}</strong>
-            {viaje.cajaNumero && <> · Caja: <strong>{viaje.cajaNumero}</strong></>}
-          </p>
-          {viaje.kmTotales > 0 && <p className="muted">Km recorridos (movimientos): {viaje.kmTotales.toLocaleString()}</p>}
-        </div>
-      )}
+        )}
 
-      <label className="campo"><span>Tramo (tabulador)</span>
-        <select value={f.tramoId} onChange={elegirTramo}>
-          <option value="">Selecciona tramo…</option>
-          {tramos.slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino)).map((t) => (
-            <option key={t.id} value={t.id}>{t.origen} → {t.destino} ({dinero(t.pagoChofer, 'USD')})</option>
-          ))}
-        </select>
-      </label>
-
-      <div className="fila-2">
+        <label className="expediente-fila"><span>Tramo (tabulador)</span>
+          <select value={f.tramoId} onChange={elegirTramo}>
+            <option value="">Selecciona tramo…</option>
+            {tramos.slice().sort((a, b) => (a.origen + a.destino).localeCompare(b.origen + b.destino)).map((t) => (
+              <option key={t.id} value={t.id}>{t.origen} → {t.destino} ({dinero(t.pagoChofer, 'USD')})</option>
+            ))}
+          </select>
+        </label>
         {usuario?.rol === 'admin' && (
-          <label className="campo"><span>Ingreso del viaje (USD)</span>
+          <label className="expediente-fila"><span>Ingreso del viaje (USD)</span>
             <input type="number" inputMode="decimal" min="0" step="0.01" value={f.precio} onChange={set('precio')} />
           </label>
         )}
-        <label className="campo"><span>Viáticos entregados (USD)</span>
+        <label className="expediente-fila"><span>Viáticos entregados (USD)</span>
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.viaticosEntregados} onChange={set('viaticosEntregados')} />
         </label>
+        {viaje && (
+          <label className="expediente-fila"><span>Viáticos comprobados por el chofer (USD)</span>
+            <input type="number" inputMode="decimal" min="0" step="0.01" value={f.viaticosComprobados} onChange={set('viaticosComprobados')} />
+          </label>
+        )}
+        <label className="expediente-fila"><span>Notas</span>
+          <textarea value={f.notas} onChange={set('notas')} />
+        </label>
       </div>
+      {viaje && Number(f.viaticosComprobados) < Number(f.viaticosEntregados) && f.viaticosComprobados !== '' && (
+        <p className="error">
+          Diferencia no comprobada: {dinero(r2(Number(f.viaticosEntregados) - Number(f.viaticosComprobados)), 'USD')} — se descontará en nómina.
+        </p>
+      )}
 
       {/* cargas: opcionales, solo en alta -- si el viaje no define puntos de carga, "Inicio de
           viaje" en Mis viajes no queda bloqueado (compatibilidad con el modelo de un solo origen) */}
@@ -757,9 +785,9 @@ function ViajeForm({ viaje, usuario, onDone }) {
         <>
           <h3>Puntos de carga ({cargas.length})</h3>
           {cargas.map((c, i) => (
-            <div key={i} className="tarjeta detalle">
-              <div className="tarjeta-top">
-                <strong>Carga {i + 1}</strong>
+            <div key={i} className="expediente-seccion">
+              <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Carga {i + 1}</span>
                 <button
                   type="button" className="btn-borrar" aria-label="Eliminar punto de carga"
                   disabled={cargas.length === 1}
@@ -783,9 +811,9 @@ function ViajeForm({ viaje, usuario, onDone }) {
         <>
           <h3>Entregas ({entregas.length})</h3>
           {entregas.map((e, i) => (
-            <div key={i} className="tarjeta detalle">
-              <div className="tarjeta-top">
-                <strong>Entrega {i + 1}</strong>
+            <div key={i} className="expediente-seccion">
+              <div className="expediente-seccion-titulo" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>Entrega {i + 1}</span>
                 <button
                   type="button" className="btn-borrar" aria-label="Eliminar entrega"
                   disabled={entregas.length === 1}
@@ -818,29 +846,15 @@ function ViajeForm({ viaje, usuario, onDone }) {
       {!precioLitro && <p className="error">Configura el precio del diésel en el Dashboard para estimar el costeo.</p>}
       {unidad && !rendimiento && <p className="muted tc-nota">La unidad aún no tiene rendimientos registrados (se calculan con las cargas de diésel).</p>}
 
-      {viaje && (
-        <label className="campo"><span>Viáticos comprobados por el chofer (USD)</span>
-          <input type="number" inputMode="decimal" min="0" step="0.01" value={f.viaticosComprobados} onChange={set('viaticosComprobados')} />
-        </label>
-      )}
-      {viaje && Number(f.viaticosComprobados) < Number(f.viaticosEntregados) && f.viaticosComprobados !== '' && (
-        <p className="error">
-          Diferencia no comprobada: {dinero(r2(Number(f.viaticosEntregados) - Number(f.viaticosComprobados)), 'USD')} — se descontará en nómina.
-        </p>
-      )}
-
-      <label className="campo"><span>Notas</span>
-        <textarea value={f.notas} onChange={set('notas')} />
-      </label>
-
       {viaje && <MovimientosTimeline movs={movs} />}
 
       {terminando && (
-        <div className="tarjeta detalle">
-          <label className="campo"><span>Odómetro final (opcional)</span>
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo">Terminar viaje</div>
+          <label className="expediente-fila"><span>Odómetro final (opcional)</span>
             <input type="number" inputMode="numeric" min="0" value={odometroFin} onChange={(e) => setOdometroFin(e.target.value)} />
           </label>
-          <div className="acciones">
+          <div className="acciones" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
             <button className="btn-completar" disabled={guardando} onClick={confirmarTerminar}>Confirmar término</button>
             <button className="btn-secundario" disabled={guardando} onClick={() => setTerminando(false)}>Cancelar</button>
           </div>
@@ -927,7 +941,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
       )}
       {lista.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>Estatus</th>{editable && <th />}</tr>
             </thead>
@@ -965,9 +979,9 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
         <button type="button" className="btn-secundario btn-bloque" onClick={() => setNueva(entregaVacia())}>+ Agregar entrega</button>
       )}
       {editable && nueva && (
-        <div className="tarjeta detalle">
+        <div className="expediente-seccion">
           <EntregaCampos e={nueva} onChange={setNueva} clientes={clientes} dirs={dirs} cargarDirs={cargarDirs} />
-          <div className="acciones">
+          <div className="acciones" style={{ padding: 'var(--sp-2) var(--sp-3)' }}>
             <button className="btn-primario" onClick={agregar}>Agregar</button>
             <button className="btn-secundario" onClick={() => setNueva(null)}>Cancelar</button>
           </div>
@@ -1338,15 +1352,30 @@ function Cobranza({ usuario }) {
     return <span className="muted">Vence {v.cobranza.fechaVence}</span>
   }
 
-  const Card = ({ v, extra }) => (
-    <button className="tarjeta" onClick={() => setDetalle(v)}>
-      <div className="tarjeta-top">
-        <strong>{v.folio} · {v.clienteNombre}</strong>
-        {esAdmin && <strong>{dinero(v.precio, 'USD')}</strong>}
-      </div>
-      <div className="muted">{v.fecha} · {v.origen} → {v.destino}</div>
-      {extra}
-    </button>
+  const Tabla = ({ lista, colVence }) => lista.length === 0 ? null : (
+    <div className="tabla-scroll">
+      <table className="tabla-densa">
+        <thead>
+          <tr>
+            <th>Folio</th><th>Cliente</th><th>Fecha</th><th>Ruta</th>
+            {esAdmin && <th className="num">Ingreso</th>}
+            {colVence && <th>Vence</th>}
+          </tr>
+        </thead>
+        <tbody>
+          {lista.map((v) => (
+            <tr key={v.id} onClick={() => setDetalle(v)}>
+              <td><strong>{v.folio}</strong></td>
+              <td>{v.clienteNombre}</td>
+              <td className="muted">{v.fecha}</td>
+              <td className="muted">{v.origen} → {v.destino}</td>
+              {esAdmin && <td className="num">{dinero(v.precio, 'USD')}</td>}
+              {colVence && <td>{badgeVence(v)}</td>}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   )
 
   return (
@@ -1361,14 +1390,14 @@ function Cobranza({ usuario }) {
 
       <h3>Por facturar ({porFacturar.length})</h3>
       {porFacturar.length === 0 && <p className="muted">Nada pendiente de facturar.</p>}
-      {porFacturar.map((v) => <Card key={v.id} v={v} />)}
+      <Tabla lista={porFacturar} />
 
       <h3>Por cobrar ({porCobrar.length})</h3>
       {porCobrar.length === 0 && <p className="muted">Nada pendiente de cobro.</p>}
-      {porCobrar.map((v) => <Card key={v.id} v={v} extra={<div>{badgeVence(v)}</div>} />)}
+      <Tabla lista={porCobrar} colVence />
 
       <h3>Pagados ({pagados.length})</h3>
-      {pagados.slice(0, 10).map((v) => <Card key={v.id} v={v} />)}
+      <Tabla lista={pagados.slice(0, 10)} />
     </div>
   )
 }
@@ -1462,57 +1491,59 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
         )}
       />
       <h2>Cobranza {viaje.folio}</h2>
-      <div className="tarjeta detalle">
-        <p><span className="muted">Cliente:</span> {viaje.clienteNombre} ({cliente?.diasCredito ?? 0} días de crédito)</p>
-        <p><span className="muted">Ruta:</span> {viaje.origen} → {viaje.destino} · {viaje.fecha}</p>
-        {usuario?.rol === 'admin' && (
-          <label className="campo"><span>Ingreso del viaje (USD)</span>
-            <div className="fila-2">
-              <input
-                type="number" inputMode="decimal" min="0" step="0.01"
-                value={precio} onChange={(e) => setPrecio(e.target.value)}
-              />
-              <button type="button" className="btn-secundario" disabled={guardandoPrecio} onClick={guardarPrecio}>
-                {guardandoPrecio ? 'Guardando…' : 'Guardar ingreso'}
-              </button>
+      <div className="expediente">
+        <div className="expediente-seccion">
+          <div className="expediente-seccion-titulo">Datos generales</div>
+          <div className="expediente-fila"><span>Cliente</span><span>{viaje.clienteNombre} ({cliente?.diasCredito ?? 0} días de crédito)</span></div>
+          <div className="expediente-fila"><span>Ruta</span><span>{viaje.origen} → {viaje.destino} · {viaje.fecha}</span></div>
+          {usuario?.rol === 'admin' && (
+            <div className="expediente-fila">
+              <span>Ingreso del viaje (USD)</span>
+              <div className="fila-2">
+                <input
+                  type="number" inputMode="decimal" min="0" step="0.01"
+                  value={precio} onChange={(e) => setPrecio(e.target.value)}
+                />
+                <button type="button" className="btn-secundario" disabled={guardandoPrecio} onClick={guardarPrecio}>
+                  {guardandoPrecio ? 'Guardando…' : 'Guardar ingreso'}
+                </button>
+              </div>
             </div>
-          </label>
-        )}
-        {facturado && <p><span className="muted">Facturado:</span> {cobranza.fechaFactura} · vence {cobranza.fechaVence}</p>}
-        {cobranza.facturaURL && <p><EnlaceArchivo ruta={cobranza.facturaURL}>Ver factura PDF</EnlaceArchivo></p>}
-        {cobranza.xmlURL && <p><EnlaceArchivo ruta={cobranza.xmlURL}>Descargar XML</EnlaceArchivo></p>}
-        {cobranza.pagado && (
-          <p>
-            <span className="badge completado">Pagado {cobranza.pagadoAt || ''}</span>
-            {cobranza.comprobanteURL && <> · <EnlaceArchivo ruta={cobranza.comprobanteURL}>Ver comprobante</EnlaceArchivo></>}
-          </p>
-        )}
-      </div>
+          )}
+          {facturado && <div className="expediente-fila"><span>Facturado</span><span>{cobranza.fechaFactura} · vence {cobranza.fechaVence}</span></div>}
+          {cobranza.facturaURL && <div className="expediente-fila"><span>Factura</span><EnlaceArchivo ruta={cobranza.facturaURL}>Ver factura PDF</EnlaceArchivo></div>}
+          {cobranza.xmlURL && <div className="expediente-fila"><span>XML</span><EnlaceArchivo ruta={cobranza.xmlURL}>Descargar XML</EnlaceArchivo></div>}
+          {cobranza.pagado && (
+            <div className="expediente-fila">
+              <span>Pago</span>
+              <span>
+                <span className="badge completado">Pagado {cobranza.pagadoAt || ''}</span>
+                {cobranza.comprobanteURL && <> · <EnlaceArchivo ruta={cobranza.comprobanteURL}>Ver comprobante</EnlaceArchivo></>}
+              </span>
+            </div>
+          )}
+        </div>
 
-      {!cobranza.pagado && (
-        <>
-          <h3>{facturado ? 'Actualizar factura' : 'Registrar factura'}</h3>
-          <label className="campo"><span>Fecha de facturación</span>
-            <input type="date" value={fechaFactura} onChange={(e) => setFechaFactura(e.target.value)} />
-          </label>
-          <div className="fila-2">
-            <label className="campo"><span>Factura PDF</span>
+        {!cobranza.pagado && (
+          <div className="expediente-seccion">
+            <div className="expediente-seccion-titulo">{facturado ? 'Actualizar factura' : 'Registrar factura'}</div>
+            <label className="expediente-fila"><span>Fecha de facturación</span>
+              <input type="date" value={fechaFactura} onChange={(e) => setFechaFactura(e.target.value)} />
+            </label>
+            <label className="expediente-fila"><span>Factura PDF</span>
               <input type="file" accept=".pdf" onChange={(e) => setPdf(e.target.files[0] ?? null)} />
             </label>
-            <label className="campo"><span>Factura XML</span>
+            <label className="expediente-fila"><span>Factura XML</span>
               <input type="file" accept=".xml" onChange={(e) => setXml(e.target.files[0] ?? null)} />
             </label>
-          </div>
-          {facturado && (
-            <>
-              <h3>Registrar pago</h3>
-              <label className="campo"><span>Comprobante bancario</span>
+            {facturado && (
+              <label className="expediente-fila"><span>Comprobante bancario</span>
                 <input type="file" accept=".pdf,image/*" onChange={(e) => setComprobante(e.target.files[0] ?? null)} />
               </label>
-            </>
-          )}
-        </>
-      )}
+            )}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -1553,7 +1584,7 @@ function KmPorChofer() {
       )}
       {ordenadas.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr><th>Chofer</th><th className="num">Km/hora</th><th className="num">Km totales</th><th className="num">Horas totales</th><th className="num">Tramos</th></tr>
             </thead>

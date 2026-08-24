@@ -499,7 +499,7 @@ function Rendimiento() {
       {trucks.length === 0 && <p className="muted">Aún no hay rendimientos calculados.</p>}
       {trucks.length > 0 && (
         <div className="tabla-scroll">
-          <table>
+          <table className="tabla-densa">
             <thead>
               <tr><th>Unidad</th><th className="num">Promedio</th><th className="num">Mediana (costeo)</th><th>Últimos 5</th><th className="num">Última lectura (km)</th></tr>
             </thead>
@@ -528,22 +528,36 @@ function Rendimiento() {
         </div>
       )}
       {cargas === null && <p className="muted">Cargando…</p>}
-      {lista.map((c) => (
-        <div key={c.id} className="tarjeta detalle">
-          <div className="tarjeta-top">
-            <strong>{c.unidadNumero}</strong>
-            <strong>{dinero(c.costoTotal + (c.caja?.costo || 0), 'MXN')}</strong>
-          </div>
-          <div className="muted">
-            {c.fecha} · {c.operadorNombre} · {c.litros} L
-            {c.rendimiento != null && ` · ${c.rendimiento} ${c.unidadLectura}/L`}
-            {c.estacion && ` · ${c.estacion}`}
-            {c.viajeFolio && ` · ${c.viajeFolio}`}
-          </div>
-          {c.esAtipico && <span className="badge alerta">Rendimiento atípico</span>}
-          {c.caja && <div className="muted">Caja {c.caja.cajaNumero}: {c.caja.litros} L · {c.caja.horasTermo} hrs</div>}
+      {lista.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr>
+                <th>Fecha</th><th>Unidad</th><th>Operador</th><th className="num">Litros</th>
+                <th className="num">Costo</th><th>Rendimiento</th><th>Estación</th><th>Viaje</th><th>Caja</th>
+              </tr>
+            </thead>
+            <tbody>
+              {lista.map((c) => (
+                <tr key={c.id}>
+                  <td className="muted">{c.fecha}</td>
+                  <td><strong>{c.unidadNumero}</strong></td>
+                  <td className="muted">{c.operadorNombre}</td>
+                  <td className="num">{c.litros}</td>
+                  <td className="num">{dinero(c.costoTotal + (c.caja?.costo || 0), 'MXN')}</td>
+                  <td className="muted">
+                    {c.rendimiento != null ? `${c.rendimiento} ${c.unidadLectura}/L` : '—'}
+                    {c.esAtipico && <span className="badge alerta" style={{ marginLeft: 'var(--sp-1)' }}>Atípico</span>}
+                  </td>
+                  <td className="muted">{c.estacion || '—'}</td>
+                  <td className="muted">{c.viajeFolio || '—'}</td>
+                  <td className="muted">{c.caja ? `${c.caja.cajaNumero}: ${c.caja.litros} L · ${c.caja.horasTermo} hrs` : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      ))}
+      )}
     </div>
   )
 }
