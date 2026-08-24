@@ -658,6 +658,48 @@ function CompraForm({ usuario, wo, onDone }) {
                 ))}
               </select>
             </label>
+            {g.conceptos.map((c, ci) => {
+              const cc = cg.conceptos[ci]
+              return (
+                <div key={ci} className="linea">
+                  <div className="fila-concepto">
+                    <label className="campo">
+                      <span>Concepto</span>
+                      <input value={c.concepto} onChange={setConcepto(gi, ci, 'concepto')} />
+                    </label>
+                    <label className="campo">
+                      <span>Cantidad</span>
+                      <input type="number" inputMode="decimal" min="0" value={c.cantidad} onChange={setConcepto(gi, ci, 'cantidad')} />
+                    </label>
+                    <label className="campo">
+                      <span>Costo unit.</span>
+                      <input type="number" inputMode="decimal" min="0" step="0.01" value={c.costoUnitario} onChange={setConcepto(gi, ci, 'costoUnitario')} />
+                    </label>
+                    <label className="campo">
+                      <span>IVA %</span>
+                      <select value={c.tasaIVA} onChange={setConcepto(gi, ci, 'tasaIVA')}>
+                        <option value="0">0%</option>
+                        <option value="8">8%</option>
+                        <option value="16">16%</option>
+                      </select>
+                    </label>
+                  </div>
+                  <div className="linea-calc">
+                    <span className="muted">Subtotal {dinero(cc.subtotal, g.moneda)} · IVA {dinero(cc.iva, g.moneda)}</span>
+                    <strong>{dinero(cc.total, g.moneda)}</strong>
+                    <button
+                      type="button" className="btn-borrar" aria-label="Eliminar concepto"
+                      disabled={g.conceptos.length === 1}
+                      onClick={() => quitarConcepto(gi, ci)}
+                    >🗑</button>
+                  </div>
+                </div>
+              )
+            })}
+            <button type="button" className="btn-secundario btn-bloque" onClick={() => agregarConcepto(gi)}>
+              + Agregar concepto
+            </button>
+
             <div className="fila-2">
               <label className="campo">
                 <span>Moneda</span>
@@ -696,47 +738,6 @@ function CompraForm({ usuario, wo, onDone }) {
               </label>
             </div>
 
-            {g.conceptos.map((c, ci) => {
-              const cc = cg.conceptos[ci]
-              return (
-                <div key={ci} className="linea">
-                  <label className="campo">
-                    <span>Concepto</span>
-                    <input value={c.concepto} onChange={setConcepto(gi, ci, 'concepto')} />
-                  </label>
-                  <div className="fila-3">
-                    <label className="campo">
-                      <span>Cantidad</span>
-                      <input type="number" inputMode="decimal" min="0" value={c.cantidad} onChange={setConcepto(gi, ci, 'cantidad')} />
-                    </label>
-                    <label className="campo">
-                      <span>Costo unit.</span>
-                      <input type="number" inputMode="decimal" min="0" step="0.01" value={c.costoUnitario} onChange={setConcepto(gi, ci, 'costoUnitario')} />
-                    </label>
-                    <label className="campo">
-                      <span>IVA %</span>
-                      <select value={c.tasaIVA} onChange={setConcepto(gi, ci, 'tasaIVA')}>
-                        <option value="0">0%</option>
-                        <option value="8">8%</option>
-                        <option value="16">16%</option>
-                      </select>
-                    </label>
-                  </div>
-                  <div className="linea-calc">
-                    <span className="muted">Subtotal {dinero(cc.subtotal, g.moneda)} · IVA {dinero(cc.iva, g.moneda)}</span>
-                    <strong>{dinero(cc.total, g.moneda)}</strong>
-                    <button
-                      type="button" className="btn-borrar" aria-label="Eliminar concepto"
-                      disabled={g.conceptos.length === 1}
-                      onClick={() => quitarConcepto(gi, ci)}
-                    >🗑</button>
-                  </div>
-                </div>
-              )
-            })}
-            <button type="button" className="btn-secundario btn-bloque" onClick={() => agregarConcepto(gi)}>
-              + Agregar concepto
-            </button>
             <div className="linea-calc grupo-total">
               <span className="muted">Total proveedor ({g.moneda})</span>
               <strong>

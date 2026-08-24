@@ -364,6 +364,10 @@ h3 { margin: 1.25rem 0 0.6rem; }
 
 .fila-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.6rem; }
 .fila-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.6rem; }
+.fila-concepto { display: grid; grid-template-columns: 2fr 0.8fr 1fr 0.8fr; gap: 0.6rem; }
+@media (max-width: 700px) {
+  .fila-concepto { grid-template-columns: 1fr; }
+}
 
 .detalle p { margin: 0.35rem 0; }
 

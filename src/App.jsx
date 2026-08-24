@@ -45,6 +45,7 @@ const NAV = {
   admin: [
     { id: 'gastos', label: 'Gastos', icono: '💵', mod: 'admin' },
     { id: 'dashboard', label: 'Dashboard', icono: '📊', mod: 'admin' },
+    { id: 'dashboard-viajes', label: 'Dashboard viajes', icono: '📈', mod: 'viajes' },
     { id: 'detalle-unidad', label: 'Detalle por Unidad', icono: '🔍', mod: 'admin' },
     { id: 'rendimiento', label: 'Diésel', icono: '⛽', mod: 'diesel' },
     { id: 'llantas', label: 'Llantas', icono: '🛞', mod: 'llantas' },

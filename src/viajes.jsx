@@ -4,6 +4,7 @@ import { mediana } from './costeo'
 import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
+import { exportarXlsx } from './utils/exportarXlsx'
 
 /* Módulo Viajes: operación + costeo + viáticos + cuentas por cobrar. Migrado a Supabase.
    - viaje_entregas: consolidación (varios clientes/destinos por viaje)
@@ -143,7 +144,6 @@ const mapEntrega = (e) => ({
   clienteNombre: e.clientes?.razon_social ?? '',
   direccionEntregaId: e.direccion_id,
   direccion: e.direccion_snapshot ?? '',
-  mercancia: e.mercancia ?? '',
   ordenSecuencia: e.orden_secuencia,
   estatus: e.estatus,
   fechaHoraEntregaReal: e.fecha_hora_entrega_real,
@@ -156,7 +156,6 @@ const mapCarga = (c) => ({
   clienteNombre: c.clientes?.razon_social ?? '',
   direccionCargaId: c.direccion_id,
   direccion: c.direccion_snapshot ?? '',
-  mercancia: c.mercancia ?? '',
   ordenSecuencia: c.orden_secuencia,
   estatus: c.estatus,
   fechaHoraRecogido: c.fecha_hora_recogido,
@@ -226,7 +225,150 @@ export default function Viajes({ usuario, vista }) {
   if (vista === 'mis-viajes') return <MisViajes />
   if (vista === 'cobranza') return <Cobranza usuario={usuario} />
   if (vista === 'kmh-chofer') return <KmPorChofer />
+  if (vista === 'dashboard-viajes') return <DashboardClientes />
   return <ListaViajes usuario={usuario} />
+}
+
+/* ---------- Dashboard: ingreso vs. costeo directo por cliente (solo admin, ver App.jsx nav) ---------- */
+
+const haceUnMes = () => {
+  const d = new Date()
+  d.setMonth(d.getMonth() - 1)
+  return d.toLocaleDateString('sv')
+}
+
+function exportarReporteDashboardViajes(filas, filasDetalle, desde, hasta) {
+  const totalIngreso = r2(filas.reduce((s, p) => s + p.ingreso, 0))
+  const totalCosteo = r2(filas.reduce((s, p) => s + p.costeo, 0))
+  const totalMargen = r2(totalIngreso - totalCosteo)
+  exportarXlsx({
+    nombreArchivo: `Dashboard_viajes_${desde || 'inicio'}_a_${hasta || 'hoy'}.xlsx`,
+    hojas: [
+      {
+        nombre: 'Por cliente',
+        datos: [
+          ['Cliente', '# Viajes', 'Ingreso (USD)', 'Costeo directo (USD)', 'Margen (USD)'],
+          ...filas.map((p) => [p.cliente, p.viajes, p.ingreso, p.costeo, p.margen]),
+          [],
+          ['TOTAL', filas.reduce((s, p) => s + p.viajes, 0), totalIngreso, totalCosteo, totalMargen],
+        ],
+      },
+      {
+        nombre: 'Detalle por viaje',
+        datos: [
+          ['Cliente', 'Viaje', 'Origen', 'Destino', 'Truck', 'Reefer', 'Ingreso (USD)', 'Costo (USD)', 'Margen (USD)'],
+          ...filasDetalle.map((f) => [f.cliente, f.folio, f.origen, f.destino, f.truck, f.reefer, f.ingreso, f.costo, f.margen]),
+        ],
+      },
+    ],
+  })
+}
+
+function DashboardClientes() {
+  const viajes = useViajes()
+  const [desde, setDesde] = useState(haceUnMes())
+  const [hasta, setHasta] = useState(hoy())
+  const [fCliente, setFCliente] = useState('')
+
+  const conFecha = (viajes ?? []).filter((v) => (!desde || v.fecha >= desde) && (!hasta || v.fecha <= hasta))
+  const clientesDisponibles = [...new Set(conFecha.map((v) => v.clienteNombre || 'Sin cliente'))].sort((a, b) => a.localeCompare(b))
+  const lista = conFecha.filter((v) => !fCliente || (v.clienteNombre || 'Sin cliente') === fCliente)
+
+  const porCliente = {}
+  lista.forEach((v) => {
+    const key = v.clienteNombre || 'Sin cliente'
+    const p = porCliente[key] ?? (porCliente[key] = { cliente: key, viajes: 0, ingreso: 0, costeo: 0 })
+    p.viajes += 1
+    p.ingreso = r2(p.ingreso + (v.precio || 0))
+    p.costeo = r2(p.costeo + (v.costeoEstimado.total || 0))
+  })
+  const filas = Object.values(porCliente)
+    .map((p) => ({ ...p, margen: r2(p.ingreso - p.costeo) }))
+    .sort((a, b) => b.ingreso - a.ingreso)
+
+  const totalIngreso = r2(filas.reduce((s, p) => s + p.ingreso, 0))
+  const totalCosteo = r2(filas.reduce((s, p) => s + p.costeo, 0))
+  const totalMargen = r2(totalIngreso - totalCosteo)
+
+  const filasDetalle = lista
+    .map((v) => ({
+      id: v.id,
+      cliente: v.clienteNombre || 'Sin cliente',
+      folio: v.folio,
+      origen: v.origen,
+      destino: v.destino,
+      truck: v.unidadNumero,
+      reefer: v.cajaNumero || '—',
+      ingreso: v.precio || 0,
+      costo: v.costeoEstimado.total || 0,
+      margen: r2((v.precio || 0) - (v.costeoEstimado.total || 0)),
+    }))
+    .sort((a, b) => a.cliente.localeCompare(b.cliente) || (a.folio || '').localeCompare(b.folio || ''))
+
+  return (
+    <div>
+      <h2>Dashboard viajes</h2>
+      <div className="fila-2">
+        <label className="campo"><span>Desde</span>
+          <input type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+        </label>
+        <label className="campo"><span>Hasta</span>
+          <input type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+        </label>
+      </div>
+      <label className="campo"><span>Cliente</span>
+        <select value={fCliente} onChange={(e) => setFCliente(e.target.value)}>
+          <option value="">Todos los clientes</option>
+          {clientesDisponibles.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </label>
+      <button
+        type="button" className="btn-secundario"
+        disabled={lista.length === 0}
+        onClick={() => exportarReporteDashboardViajes(filas, filasDetalle, desde, hasta)}
+      >
+        ⬇ Descargar reporte (Excel)
+      </button>
+
+      <div className="kpis">
+        <div className="kpi grande">Ingreso (USD)<strong>{dinero(totalIngreso, 'USD')}</strong></div>
+        <div className="kpi">Costeo directo (USD)<strong>{dinero(totalCosteo, 'USD')}</strong></div>
+        <div className="kpi">Margen (USD)<strong>{dinero(totalMargen, 'USD')}</strong></div>
+      </div>
+
+      <h3>Detalle por cliente y viaje</h3>
+      {filasDetalle.length === 0 ? (
+        <p className="muted vacio">Sin viajes en el rango seleccionado.</p>
+      ) : (
+        <div className="tabla-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th><th>Viaje</th><th>Origen</th><th>Destino</th>
+                <th>Truck</th><th>Reefer</th>
+                <th className="num">Ingreso</th><th className="num">Costo</th><th className="num">Margen</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filasDetalle.map((f) => (
+                <tr key={f.id}>
+                  <td><strong>{f.cliente}</strong></td>
+                  <td>{f.folio}</td>
+                  <td>{f.origen}</td>
+                  <td>{f.destino}</td>
+                  <td>{f.truck}</td>
+                  <td>{f.reefer}</td>
+                  <td className="num">{dinero(f.ingreso, 'USD')}</td>
+                  <td className="num">{dinero(f.costo, 'USD')}</td>
+                  <td className="num">{dinero(f.margen, 'USD')}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
 }
 
 /* ---------- Lista + formulario (dispatch/admin) ---------- */
@@ -289,10 +431,10 @@ const viajeVacio = () => ({
   notas: '',
 })
 
-const entregaVacia = () => ({ clienteId: '', direccionEntregaId: '', mercancia: '' })
-const cargaVacia = () => ({ clienteId: '', direccionCargaId: '', mercancia: '' })
+const entregaVacia = () => ({ clienteId: '', direccionEntregaId: '' })
+const cargaVacia = () => ({ clienteId: '', direccionCargaId: '' })
 
-// campos de una entrega (cliente + dirección + mercancía); se usa en alta de viaje y en agregar entrega
+// campos de una entrega (cliente + dirección); se usa en alta de viaje y en agregar entrega
 function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
   return (
     <>
@@ -313,15 +455,11 @@ function EntregaCampos({ e, onChange, clientes, dirs, cargarDirs }) {
           {(dirs[e.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
         </select>
       </label>
-      <label className="campo"><span>Mercancía</span>
-        <input value={e.mercancia} onChange={(ev) => onChange({ ...e, mercancia: ev.target.value })}
-          placeholder="Ej. 22 tarimas de aguacate" />
-      </label>
     </>
   )
 }
 
-// campos de un punto de carga (cliente + dirección + mercancía) -- mismo selector de direcciones
+// campos de un punto de carga (cliente + dirección) -- mismo selector de direcciones
 // que entrega, cualquier dirección del cliente sirve para ambos usos (sin distinguir tipo)
 function CargaCampos({ c, onChange, clientes, dirs, cargarDirs }) {
   return (
@@ -342,10 +480,6 @@ function CargaCampos({ c, onChange, clientes, dirs, cargarDirs }) {
           <option value="">Selecciona…</option>
           {(dirs[c.clienteId] ?? []).map((d) => <option key={d.id} value={d.id}>{direccionTexto(d)}</option>)}
         </select>
-      </label>
-      <label className="campo"><span>Mercancía</span>
-        <input value={c.mercancia} onChange={(ev) => onChange({ ...c, mercancia: ev.target.value })}
-          placeholder="Ej. 22 tarimas de aguacate" />
       </label>
     </>
   )
@@ -465,7 +599,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
             cliente_id: e.clienteId,
             direccion_id: e.direccionEntregaId,
             direccion_snapshot: dir ? direccionTexto(dir) : '',
-            mercancia: e.mercancia,
           }
         })
         const cargasJson = cargasValidas.map((c) => {
@@ -474,7 +607,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
             cliente_id: c.clienteId,
             direccion_id: c.direccionCargaId,
             direccion_snapshot: dir ? direccionTexto(dir) : '',
-            mercancia: c.mercancia,
           }
         })
         const { error } = await supabase.rpc('crear_viaje', {
@@ -766,7 +898,6 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
         cliente_id: nueva.clienteId,
         direccion_id: nueva.direccionEntregaId,
         direccion_snapshot: dir ? direccionTexto(dir) : '',
-        mercancia: nueva.mercancia,
         orden_secuencia: orden,
       })
       if (error) throw error
@@ -798,7 +929,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
         <div className="tabla-scroll">
           <table>
             <thead>
-              <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>Mercancía</th><th>Estatus</th>{editable && <th />}</tr>
+              <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>Estatus</th>{editable && <th />}</tr>
             </thead>
             <tbody>
               {lista.map((e, i) => (
@@ -806,7 +937,6 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
                   <td>{e.ordenSecuencia}</td>
                   <td><strong>{e.clienteNombre}</strong></td>
                   <td className="muted">{e.direccion}</td>
-                  <td>{e.mercancia}</td>
                   <td>
                     {e.estatus === 'entregada'
                       ? <span className="badge completado">Entregada</span>
@@ -1070,7 +1200,6 @@ function CargasChofer({ viajeId }) {
               : <span className="badge en_proceso">Pendiente</span>}
           </div>
           <div className="muted">{c.direccion}</div>
-          {c.mercancia && <div className="muted">{c.mercancia}</div>}
           {c.estatus === 'pendiente' && (
             <button className="btn-completar" disabled={guardando === c.id} onClick={() => recoger(c)}>
               {guardando === c.id ? 'Guardando…' : 'Marcar como recogida'}
@@ -1164,7 +1293,6 @@ function EntregasChofer({ viajeId, kmFinalKm }) {
               : <span className="badge en_proceso">Pendiente</span>}
           </div>
           <div className="muted">{e.direccion}</div>
-          {e.mercancia && <div className="muted">{e.mercancia}</div>}
           {e.estatus === 'pendiente' && (
             <>
               <label className="campo"><span>Foto de evidencia (opcional)</span>
