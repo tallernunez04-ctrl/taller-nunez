@@ -9,9 +9,9 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.png'],
       manifest: {
-        name: 'Taller Nuñez',
-        short_name: 'T. Nuñez',
-        description: 'Gestión de taller mecánico - Transportes Nuñez',
+        name: 'Nuñez ERP',
+        short_name: 'Nuñez ERP',
+        description: 'ERP de operaciones - Transportes Nuñez',
         lang: 'es',
         display: 'standalone',
         start_url: '/',

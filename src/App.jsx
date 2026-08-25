@@ -140,9 +140,9 @@ export default function App() {
   if (estado === 'anonimo') {
     return (
       <div className="pantalla-centrada">
-        <img src="/logo-nunez.png" alt="Taller Nuñez" className="logo logo-login" />
-        <h1 className="marca">Taller <span>Nuñez</span></h1>
-        <p className="muted">Gestión de taller mecánico</p>
+        <img src="/logo-nunez.png" alt="Nuñez ERP" className="logo logo-login" />
+        <h1 className="marca">Nuñez <span>ERP</span></h1>
+        <p className="muted">Sistema de gestión — Transportes Nuñez</p>
         <form className="form-login" onSubmit={entrar}>
           <input
             type="email"
@@ -170,7 +170,7 @@ export default function App() {
   if (estado === 'no_autorizado') {
     return (
       <div className="pantalla-centrada">
-        <h1 className="marca">Taller <span>Nuñez</span></h1>
+        <h1 className="marca">Nuñez <span>ERP</span></h1>
         <p className="error">Acceso no autorizado — contacta al administrador</p>
         <button className="btn-secundario" onClick={salir}>Usar otra cuenta</button>
       </div>
@@ -240,7 +240,7 @@ export default function App() {
       )}
       <div className="app-main">
         <header className="encabezado">
-          <img src="/logo-nunez.png" alt="Taller Nuñez" className="logo" />
+          <img src="/logo-nunez.png" alt="Nuñez ERP" className="logo" />
           <div className="usuario">
             <span className="muted">{usuario.nombre} · {usuario.rol}</span>
             <button className="btn-salir" onClick={salir}>Salir</button>
