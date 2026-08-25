@@ -103,7 +103,12 @@ export const mapViaje = (v, resumenes = { entregas: {}, cargas: {}, km: {}, clie
     destino: v.destino,
     km: Number(v.km) || 0,
     kmFuente: v.km_fuente,
+    // precio es el ingreso neto (lo que se usa para margen/costeo); ivaMonto/precioConIva
+    // son lo que se factura y cobra de verdad al cliente -- solo importan en Cobranza
     precio: Number(v.precio) || 0,
+    ivaTasa: v.iva_tasa != null ? Number(v.iva_tasa) : 0.16,
+    ivaMonto: r2((Number(v.precio) || 0) * (v.iva_tasa != null ? Number(v.iva_tasa) : 0.16)),
+    precioConIva: r2((Number(v.precio) || 0) * (1 + (v.iva_tasa != null ? Number(v.iva_tasa) : 0.16))),
     costeoEstimado: {
       dieselUSD: Number(v.costeo_diesel_usd) || 0,
       pagoChofer: Number(v.costeo_pago_chofer) || 0,
@@ -1371,7 +1376,7 @@ function Cobranza({ usuario }) {
     .filter((v) => v.cobranza?.fechaFactura && !v.cobranza?.pagado)
     .sort((a, b) => (a.cobranza.fechaVence || '').localeCompare(b.cobranza.fechaVence || ''))
   const pagados = terminados.filter((v) => v.cobranza?.pagado)
-  const totalPorCobrar = r2(porCobrar.reduce((s, v) => s + (v.precio || 0), 0))
+  const totalPorCobrar = r2(porCobrar.reduce((s, v) => s + (v.precioConIva || 0), 0))
 
   const badgeVence = (v) => {
     const dias = Math.ceil((new Date(v.cobranza.fechaVence + 'T00:00') - new Date()) / 86400000)
@@ -1386,7 +1391,7 @@ function Cobranza({ usuario }) {
         <thead>
           <tr>
             <th>Folio</th><th>Cliente</th><th>PO cliente</th><th>Fecha</th><th>Ruta</th>
-            {esAdmin && <th className="num">Ingreso</th>}
+            {esAdmin && <th className="num">Total (IVA incl.)</th>}
             {colVence && <th>Vence</th>}
           </tr>
         </thead>
@@ -1398,7 +1403,7 @@ function Cobranza({ usuario }) {
               <td className="muted">{v.ordenClienteTexto}</td>
               <td className="muted">{v.fecha}</td>
               <td className="muted">{v.origen} → {v.destino}</td>
-              {esAdmin && <td className="num">{dinero(v.precio, 'USD')}</td>}
+              {esAdmin && <td className="num">{dinero(v.precioConIva, 'USD')}</td>}
               {colVence && <td>{badgeVence(v)}</td>}
             </tr>
           ))}
@@ -1438,6 +1443,7 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
   const [xml, setXml] = useState(null)
   const [comprobante, setComprobante] = useState(null)
   const [precio, setPrecio] = useState(viaje.precio ?? '')
+  const [ivaTasa, setIvaTasa] = useState(viaje.ivaTasa ?? 0.16)
   const [guardando, setGuardando] = useState(false)
   const [guardandoPrecio, setGuardandoPrecio] = useState(false)
 
@@ -1445,13 +1451,16 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
   const cliente = clientes.find((c) => c.id === viaje.clientesIds?.[0])
   const cobranza = viaje.cobranza ?? {}
   const facturado = Boolean(cobranza.fechaFactura)
+  const ivaMonto = r2((Number(precio) || 0) * ivaTasa)
+  const totalConIva = r2((Number(precio) || 0) + ivaMonto)
 
   // el ingreso del viaje (lo que se le cobra al cliente) lo captura admin aquí -- dispatch, al
   // dar de alta el viaje, solo anota viáticos y tabulador porque el precio varía por cliente
   const guardarPrecio = async () => {
     setGuardandoPrecio(true)
     try {
-      const { error } = await supabase.from('viajes').update({ precio: Number(precio) || 0 }).eq('id', viaje.id)
+      const { error } = await supabase.from('viajes')
+        .update({ precio: Number(precio) || 0, iva_tasa: ivaTasa }).eq('id', viaje.id)
       if (error) throw error
     } catch (e) {
       console.error(e)
@@ -1534,10 +1543,16 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
                   type="number" inputMode="decimal" min="0" step="0.01"
                   value={precio} onChange={(e) => setPrecio(e.target.value)}
                 />
+                <select value={ivaTasa} onChange={(e) => setIvaTasa(Number(e.target.value))}>
+                  <option value="0">IVA 0%</option>
+                  <option value="0.08">IVA 8%</option>
+                  <option value="0.16">IVA 16%</option>
+                </select>
                 <button type="button" className="btn-secundario" disabled={guardandoPrecio} onClick={guardarPrecio}>
                   {guardandoPrecio ? 'Guardando…' : 'Guardar ingreso'}
                 </button>
               </div>
+              <p className="muted tc-nota">IVA {dinero(ivaMonto, 'USD')} · Total con IVA {dinero(totalConIva, 'USD')}</p>
             </div>
           )}
           {facturado && <div className="expediente-fila"><span>Facturado</span><span>{cobranza.fechaFactura} · vence {cobranza.fechaVence}</span></div>}
