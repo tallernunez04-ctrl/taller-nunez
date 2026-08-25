@@ -5,10 +5,10 @@ import { FALLA_LABEL, LECTURA_LABEL, TIPOS, piezasLista } from './taller'
 import { r2, dinero, hoy } from './utils/format'
 
 export const METODOS = [
+  ['credito_proveedor', 'Crédito proveedor'],
   ['efectivo', 'Efectivo'],
   ['tarjeta', 'Tarjeta'],
   ['transferencia', 'Transferencia'],
-  ['credito_proveedor', 'Crédito proveedor'],
 ]
 export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
 
@@ -111,10 +111,6 @@ export function useTabla(tabla, mapear, construir) {
 export const useTipoCambio = () => {
   const filas = useTabla('config', (c) => c)
   return filas?.[0] ? Number(filas[0].tipo_cambio_usd) : null
-}
-export const usePrecioDiesel = () => {
-  const filas = useTabla('config', (c) => c)
-  return filas?.[0] ? Number(filas[0].precio_diesel_litro) : null
 }
 
 // selects con los embeds de FK que necesita la UI (evita denormalizar unidadNumero/proveedor/etc.)
@@ -471,7 +467,7 @@ const compraVacia = (wo) => ({
   unidadNumero: wo?.unidadNumero ?? '',
   esGeneral: false,
   fecha: hoy(),
-  metodoPago: 'efectivo',
+  metodoPago: 'credito_proveedor',
   notas: '',
   grupos: [grupoVacio()],
 })
@@ -615,6 +611,15 @@ function CompraForm({ usuario, wo, onDone }) {
     <div>
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarDisabled={!tc} guardarLabel="Guardar compra" />
       <h2>{wo ? `Compra para ${wo.wo}` : 'Nueva compra directa'}</h2>
+
+      {wo && piezasLista(wo.piezasRequeridas).length > 0 && (
+        <div className="expediente-seccion">
+          <div className="expediente-fila">
+            <span>Piezas requeridas</span>
+            <ol className="lista-piezas">{piezasLista(wo.piezasRequeridas).map((p, i) => <li key={i}>{p}</li>)}</ol>
+          </div>
+        </div>
+      )}
 
       {wo ? (
         <label className="campo">
@@ -997,6 +1002,33 @@ const lunesDe = (fecha) => {
   return d.toLocaleDateString('sv')
 }
 
+// factura/XML a veces llegan después del pago -- este control deja adjuntarlos desde
+// Cuentas por pagar en cualquier momento (pendiente o ya pagada), sin volver a Compras
+function AdjuntoCompra({ compra, campo, url, label, carpeta }) {
+  const [subiendo, setSubiendo] = useState(false)
+  const adjuntar = async (file) => {
+    if (!file) return
+    setSubiendo(true)
+    try {
+      const ruta = await subirArchivo(`compras/${compra.id}/${carpeta}_${file.name}`, file)
+      const { error } = await supabase.from('compras').update({ [campo]: ruta }).eq('id', compra.id)
+      if (error) throw error
+    } catch (e) {
+      alert('Error: ' + e.message)
+    } finally {
+      setSubiendo(false)
+    }
+  }
+  if (url) return <EnlaceArchivo ruta={url}>Ver {label}</EnlaceArchivo>
+  return (
+    <label className="btn-secundario">
+      {subiendo ? 'Subiendo…' : `+ ${label}`}
+      <input type="file" accept=".pdf,.xml,image/*" style={{ display: 'none' }} disabled={subiendo}
+        onChange={(e) => adjuntar(e.target.files[0] ?? null)} />
+    </label>
+  )
+}
+
 function CuentasPorPagar() {
   const [pagando, setPagando] = useState(null) // compra en proceso de pago
   const [comprobante, setComprobante] = useState(null)
@@ -1005,6 +1037,8 @@ function CuentasPorPagar() {
 
   const pendientes = (compras ?? []).filter((c) => !c.pagado)
     .sort((a, b) => (a.fechaVence || '').localeCompare(b.fechaVence || ''))
+  const pagadas = (compras ?? []).filter((c) => c.pagado)
+    .sort((a, b) => (b.pagadoAt || '').localeCompare(a.pagadoAt || ''))
   const totalUSD = r2(pendientes.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
 
   // agrupa por semana de vencimiento
@@ -1080,7 +1114,7 @@ function CuentasPorPagar() {
               <thead>
                 <tr>
                   <th>Folio</th><th>Proveedor</th><th>Compra</th><th>Vence</th>
-                  <th className="num">Total</th><th>Factura</th><th></th>
+                  <th className="num">Total</th><th>Factura</th><th>XML</th><th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1095,7 +1129,8 @@ function CuentasPorPagar() {
                         : '—'}
                     </td>
                     <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
-                    <td>{c.facturaURL ? <EnlaceArchivo ruta={c.facturaURL}>Ver</EnlaceArchivo> : '—'}</td>
+                    <td><AdjuntoCompra compra={c} campo="factura_path" url={c.facturaURL} label="factura" carpeta="factura" /></td>
+                    <td><AdjuntoCompra compra={c} campo="xml_path" url={c.xmlURL} label="XML" carpeta="xml" /></td>
                     <td><button type="button" className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button></td>
                   </tr>
                 ))}
@@ -1104,6 +1139,34 @@ function CuentasPorPagar() {
           </div>
         </div>
       ))}
+
+      <h3>Pagadas ({pagadas.length})</h3>
+      {compras !== null && pagadas.length === 0 && <p className="muted vacio">Sin cuentas pagadas todavía.</p>}
+      {pagadas.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr>
+                <th>Folio</th><th>Proveedor</th><th>Compra</th><th>Pagada el</th>
+                <th className="num">Total</th><th>Factura</th><th>XML</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pagadas.map((c) => (
+                <tr key={c.id}>
+                  <td><strong>{c.poFolio || c.fecha}</strong></td>
+                  <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
+                  <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
+                  <td className="muted">{c.pagadoAt}</td>
+                  <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
+                  <td><AdjuntoCompra compra={c} campo="factura_path" url={c.facturaURL} label="factura" carpeta="factura" /></td>
+                  <td><AdjuntoCompra compra={c} campo="xml_path" url={c.xmlURL} label="XML" carpeta="xml" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   )
 }

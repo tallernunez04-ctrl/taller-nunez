@@ -70,6 +70,15 @@ const mapProveedor = (p) => ({
   rfc: p.rfc ?? '',
   diasCredito: p.dias_credito ?? 0,
   banco: { nombre: p.banco_nombre ?? '', clabe: p.banco_clabe ?? '', cuenta: p.banco_cuenta ?? '' },
+  direccion: p.direccion ?? '',
+  contacto1: {
+    nombre: p.contacto1_nombre ?? '', telOficina: p.contacto1_tel_oficina ?? '',
+    telCelular: p.contacto1_tel_celular ?? '', telCasa: p.contacto1_tel_casa ?? '', correo: p.contacto1_correo ?? '',
+  },
+  contacto2: {
+    nombre: p.contacto2_nombre ?? '', telOficina: p.contacto2_tel_oficina ?? '',
+    telCelular: p.contacto2_tel_celular ?? '', telCasa: p.contacto2_tel_casa ?? '', correo: p.contacto2_correo ?? '',
+  },
   activo: p.activo,
 })
 const mapTramo = (t) => ({ id: t.id, origen: t.origen, destino: t.destino, pagoChofer: t.pago_chofer, km: t.km ?? 0 })
@@ -515,9 +524,13 @@ function ClienteForm({ cliente, onDone }) {
 
 /* ---------- Proveedores ---------- */
 
+const proveedorContactoVacio = () => ({ nombre: '', telOficina: '', telCelular: '', telCasa: '', correo: '' })
 const proveedorVacio = () => ({
   razonSocial: '', rfc: '', diasCredito: 0,
   banco: { nombre: '', clabe: '', cuenta: '' },
+  direccion: '',
+  contacto1: proveedorContactoVacio(),
+  contacto2: proveedorContactoVacio(),
 })
 
 function Proveedores() {
@@ -543,13 +556,14 @@ function Proveedores() {
         <div className="tabla-scroll">
           <table className="tabla-densa">
             <thead>
-              <tr><th>Razón social</th><th>RFC</th><th>Banco</th><th>Crédito</th></tr>
+              <tr><th>Razón social</th><th>RFC</th><th>Contacto</th><th>Banco</th><th>Crédito</th></tr>
             </thead>
             <tbody>
               {lista.map((p) => (
                 <tr key={p.id} onClick={() => setEditando(p)}>
                   <td><strong>{p.razonSocial}</strong></td>
                   <td className="muted">{p.rfc || '—'}</td>
+                  <td className="muted">{p.contacto1?.nombre || '—'}</td>
                   <td className="muted">{p.banco?.nombre || '—'}</td>
                   <td className="muted">{p.diasCredito ? `${p.diasCredito} días` : 'Contado'}</td>
                 </tr>
@@ -567,6 +581,7 @@ function ProveedorForm({ proveedor, onDone }) {
   const [guardando, setGuardando] = useState(false)
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
   const setBanco = (sub) => (e) => setF({ ...f, banco: { ...f.banco, [sub]: e.target.value } })
+  const setContacto = (num, sub) => (e) => setF({ ...f, [num]: { ...f[num], [sub]: e.target.value } })
 
   const guardar = async () => {
     if (!f.razonSocial.trim()) { alert('Escribe la razón social'); return }
@@ -576,6 +591,13 @@ function ProveedorForm({ proveedor, onDone }) {
         razon_social: f.razonSocial.trim(), rfc: f.rfc || null,
         dias_credito: Number(f.diasCredito) || 0,
         banco_nombre: f.banco.nombre || null, banco_clabe: f.banco.clabe || null, banco_cuenta: f.banco.cuenta || null,
+        direccion: f.direccion || null,
+        contacto1_nombre: f.contacto1.nombre || null, contacto1_tel_oficina: f.contacto1.telOficina || null,
+        contacto1_tel_celular: f.contacto1.telCelular || null, contacto1_tel_casa: f.contacto1.telCasa || null,
+        contacto1_correo: f.contacto1.correo || null,
+        contacto2_nombre: f.contacto2.nombre || null, contacto2_tel_oficina: f.contacto2.telOficina || null,
+        contacto2_tel_celular: f.contacto2.telCelular || null, contacto2_tel_casa: f.contacto2.telCasa || null,
+        contacto2_correo: f.contacto2.correo || null,
       }
       const { error } = proveedor
         ? await supabase.from('proveedores').update(datos).eq('id', proveedor.id)
@@ -605,6 +627,9 @@ function ProveedorForm({ proveedor, onDone }) {
         <label className="expediente-fila"><span>Días de crédito</span>
           <input type="number" inputMode="numeric" min="0" value={f.diasCredito} onChange={set('diasCredito')} />
         </label>
+        <label className="expediente-fila"><span>Dirección</span>
+          <input value={f.direccion} onChange={set('direccion')} />
+        </label>
       </div>
       <div className="expediente-seccion">
         <div className="expediente-seccion-titulo">Datos bancarios</div>
@@ -616,6 +641,42 @@ function ProveedorForm({ proveedor, onDone }) {
         </label>
         <label className="expediente-fila"><span>Cuenta</span>
           <input value={f.banco.cuenta} onChange={setBanco('cuenta')} inputMode="numeric" />
+        </label>
+      </div>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Contacto 1</div>
+        <label className="expediente-fila"><span>Nombre</span>
+          <input value={f.contacto1.nombre} onChange={setContacto('contacto1', 'nombre')} />
+        </label>
+        <label className="expediente-fila"><span>Teléfono oficina</span>
+          <input value={f.contacto1.telOficina} onChange={setContacto('contacto1', 'telOficina')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Teléfono celular</span>
+          <input value={f.contacto1.telCelular} onChange={setContacto('contacto1', 'telCelular')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Teléfono casa</span>
+          <input value={f.contacto1.telCasa} onChange={setContacto('contacto1', 'telCasa')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Correo</span>
+          <input value={f.contacto1.correo} onChange={setContacto('contacto1', 'correo')} type="email" />
+        </label>
+      </div>
+      <div className="expediente-seccion">
+        <div className="expediente-seccion-titulo">Contacto 2</div>
+        <label className="expediente-fila"><span>Nombre</span>
+          <input value={f.contacto2.nombre} onChange={setContacto('contacto2', 'nombre')} />
+        </label>
+        <label className="expediente-fila"><span>Teléfono oficina</span>
+          <input value={f.contacto2.telOficina} onChange={setContacto('contacto2', 'telOficina')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Teléfono celular</span>
+          <input value={f.contacto2.telCelular} onChange={setContacto('contacto2', 'telCelular')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Teléfono casa</span>
+          <input value={f.contacto2.telCasa} onChange={setContacto('contacto2', 'telCasa')} inputMode="tel" />
+        </label>
+        <label className="expediente-fila"><span>Correo</span>
+          <input value={f.contacto2.correo} onChange={setContacto('contacto2', 'correo')} type="email" />
         </label>
       </div>
     </div>

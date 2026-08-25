@@ -3,7 +3,7 @@ import { supabase } from './lib/supabaseClient'
 import { FALLA_LABEL, LECTURA_LABEL, piezasLista } from './taller'
 import {
   ESTATUS, mapCompra, mapWO, METODOS, SELECT_COMPRA, SELECT_WO, SelectorUnidad,
-  useTabla, useUnidades, useTipoCambio, usePrecioDiesel, BarraAcciones,
+  useTabla, useUnidades, useTipoCambio, BarraAcciones,
 } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -273,15 +273,12 @@ function exportarGasto(c, wo) {
 function Dashboard() {
   const [mes, setMes] = useState(mesActual())
   const [tcInput, setTcInput] = useState('')
-  const [dieselInput, setDieselInput] = useState('')
   const unidades = useUnidades()
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA)) ?? []
   const wos = useTabla('work_orders', mapWO, (q) => q.select(SELECT_WO)) ?? []
   const tc = useTipoCambio()
-  const precioDiesel = usePrecioDiesel()
 
   useEffect(() => { if (tc != null) setTcInput(String(tc)) }, [tc])
-  useEffect(() => { if (precioDiesel != null) setDieselInput(String(precioDiesel)) }, [precioDiesel])
 
   const comprasMes = compras.filter((c) => (c.fecha || '').startsWith(mes))
   const wosCompletadas = wos.filter((w) =>
@@ -326,17 +323,6 @@ function Dashboard() {
         <span className="muted">TC USD→MXN</span>
         <input type="number" step="0.01" min="0" value={tcInput} onChange={(e) => setTcInput(e.target.value)} />
         <button className="btn-primario" onClick={actualizarTC}>Actualizar</button>
-      </div>
-
-      <div className="tc-fila">
-        <span className="muted">Diésel $/L (MXN)</span>
-        <input type="number" step="0.01" min="0" value={dieselInput} onChange={(e) => setDieselInput(e.target.value)} />
-        <button className="btn-primario" onClick={async () => {
-          const v = Number(dieselInput)
-          if (!v || v <= 0) { alert('Precio inválido'); return }
-          const { error } = await supabase.from('config').update({ precio_diesel_litro: v }).eq('id', true)
-          if (error) alert('Error: ' + error.message)
-        }}>Actualizar</button>
       </div>
 
       <h3>Gasto por unidad (USD)</h3>

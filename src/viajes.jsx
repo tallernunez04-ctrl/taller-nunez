@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { subirArchivo, supabase } from './lib/supabaseClient'
 import { mediana } from './costeo'
-import { usePrecioDiesel, useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones, EnlaceArchivo } from './compras'
+import { useTipoCambio, useUnidades, SelectorUnidad, CampoOdometro, BarraAcciones, EnlaceArchivo } from './compras'
 import { dinero, r2, hoy } from './utils/format'
 import { cargarDirecciones, direccionTexto, useClientes, useOperadores, useTabuladores } from './catalogos'
 import { exportarXlsx } from './utils/exportarXlsx'
@@ -69,21 +69,28 @@ const SELECT_MOVIMIENTO = `*,
 
 // vistas que reemplazan los contadores que antes vivían en el doc del viaje (increment())
 async function cargarResumenes() {
-  const [ent, car, km, cli] = await Promise.all([
+  const [ent, car, km, cli, ord] = await Promise.all([
     supabase.from('v_viaje_entregas_resumen').select('*'),
     supabase.from('v_viaje_cargas_resumen').select('*'),
     supabase.from('v_viaje_kilometraje').select('*'),
     supabase.from('v_viaje_clientes').select('*'),
+    supabase.from('viaje_entregas').select('viaje_id, orden_cliente').not('orden_cliente', 'is', null),
   ])
+  const ordenesPorViaje = {}
+  for (const e of ord.data ?? []) {
+    if (!e.orden_cliente) continue
+    ordenesPorViaje[e.viaje_id] = [...(ordenesPorViaje[e.viaje_id] ?? []), e.orden_cliente]
+  }
   return {
     entregas: Object.fromEntries((ent.data ?? []).map((x) => [x.viaje_id, x])),
     cargas: Object.fromEntries((car.data ?? []).map((x) => [x.viaje_id, x])),
     km: Object.fromEntries((km.data ?? []).map((x) => [x.viaje_id, x])),
     clientes: Object.fromEntries((cli.data ?? []).map((x) => [x.viaje_id, x])),
+    ordenes: ordenesPorViaje,
   }
 }
 
-export const mapViaje = (v, resumenes = { entregas: {}, cargas: {}, km: {}, clientes: {} }) => {
+export const mapViaje = (v, resumenes = { entregas: {}, cargas: {}, km: {}, clientes: {}, ordenes: {} }) => {
   const ent = resumenes.entregas[v.id]
   const car = resumenes.cargas[v.id]
   const cli = resumenes.clientes[v.id]
@@ -135,6 +142,7 @@ export const mapViaje = (v, resumenes = { entregas: {}, cargas: {}, km: {}, clie
     kmTotales: Number(resumenes.km[v.id]?.km_totales) || 0,
     clientesIds: cli?.cliente_ids ?? [],
     clienteNombre: cli?.clientes_texto ?? '',
+    ordenClienteTexto: (resumenes.ordenes?.[v.id] ?? []).join(', '),
   }
 }
 
@@ -145,6 +153,7 @@ const mapEntrega = (e) => ({
   direccionEntregaId: e.direccion_id,
   direccion: e.direccion_snapshot ?? '',
   ordenSecuencia: e.orden_secuencia,
+  ordenCliente: e.orden_cliente ?? '',
   estatus: e.estatus,
   fechaHoraEntregaReal: e.fecha_hora_entrega_real,
   evidenciaUrl: e.evidencia_path ?? '',
@@ -211,6 +220,11 @@ export async function marcarEntregada(entregaId, evidenciaPath) {
   const { error } = await supabase.from('viaje_entregas').update({
     estatus: 'entregada', fecha_hora_entrega_real: new Date().toISOString(), evidencia_path: evidenciaPath || null,
   }).eq('id', entregaId)
+  if (error) throw error
+}
+
+export async function guardarOrdenCliente(entregaId, ordenCliente) {
+  const { error } = await supabase.from('viaje_entregas').update({ orden_cliente: ordenCliente || null }).eq('id', entregaId)
   if (error) throw error
 }
 
@@ -506,7 +520,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const clientes = useClientes() ?? []
   const operadores = useOperadores() ?? []
   const tramos = useTabuladores() ?? []
-  const precioDieselLitro = usePrecioDiesel()
   const [rendMap, setRendMap] = useState({})
   const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
   const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven aparte
@@ -574,9 +587,9 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const km = viaje?.kmTotales ?? 0
   const rendUnidad = rendMap[camionActualId]
   const rendimiento = rendUnidad?.rendimiento ?? 0
-  // precio real pagado por esta unidad (mediana de sus últimas cargas) si ya existe -- si no,
-  // cae al valor fijo de config (Dashboard) como estimado genérico
-  const precioLitro = rendUnidad?.precioLitro || precioDieselLitro || 0
+  // precio real pagado por esta unidad (mediana de sus últimas cargas) -- sin historial
+  // propio el estimado de diésel simplemente es $0 hasta que la unidad tenga cargas registradas
+  const precioLitro = rendUnidad?.precioLitro || 0
   const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
   const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
   const pagoChofer = tramo?.pagoChofer || 0
@@ -943,7 +956,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
         <div className="tabla-scroll">
           <table className="tabla-densa">
             <thead>
-              <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>Estatus</th>{editable && <th />}</tr>
+              <tr><th>#</th><th>Cliente</th><th>Dirección</th><th>PO cliente</th><th>Estatus</th>{editable && <th />}</tr>
             </thead>
             <tbody>
               {lista.map((e, i) => (
@@ -951,6 +964,7 @@ function EntregasSection({ viaje, clientes, dirs, cargarDirs, editable }) {
                   <td>{e.ordenSecuencia}</td>
                   <td><strong>{e.clienteNombre}</strong></td>
                   <td className="muted">{e.direccion}</td>
+                  <td className="muted">{e.ordenCliente}</td>
                   <td>
                     {e.estatus === 'entregada'
                       ? <span className="badge completado">Entregada</span>
@@ -1127,12 +1141,19 @@ function MisViajes() {
   const viajes = useViajes()
   const unidades = useUnidades()
 
+  // solo lo activo/pendiente arriba -- terminado/conciliado es historial, no le sirve al chofer
+  // aquí y confundía el orden (ver caso V-0012). El en curso (iniciadoEn) siempre primero,
+  // luego los que están en fila por fecha, para que "el que sigue" quede en segunda línea.
+  const activos = (viajes ?? [])
+    .filter((v) => v.estatus === 'en_proceso')
+    .sort((a, b) => (b.iniciadoEn ? 1 : 0) - (a.iniciadoEn ? 1 : 0) || (a.fecha ?? '').localeCompare(b.fecha ?? ''))
+
   return (
     <div>
       <h2>Mis viajes</h2>
       {viajes === null && <p className="muted">Cargando…</p>}
-      {viajes !== null && viajes.length === 0 && <p className="muted vacio">Sin viajes asignados.</p>}
-      {(viajes ?? []).map((v) => (
+      {viajes !== null && activos.length === 0 && <p className="muted vacio">Sin viajes asignados.</p>}
+      {activos.map((v) => (
         <div key={v.id} className="tarjeta">
           <div className="tarjeta-top">
             <strong>{v.folio}</strong>
@@ -1307,6 +1328,13 @@ function EntregasChofer({ viajeId, kmFinalKm }) {
               : <span className="badge en_proceso">Pendiente</span>}
           </div>
           <div className="muted">{e.direccion}</div>
+          <label className="campo"><span># de orden / PO del cliente</span>
+            <input type="text" defaultValue={e.ordenCliente} placeholder="Ej. PO-4821"
+              onBlur={(ev) => {
+                if (ev.target.value === e.ordenCliente) return
+                guardarOrdenCliente(e.id, ev.target.value.trim()).catch((err) => alert('Error: ' + err.message))
+              }} />
+          </label>
           {e.estatus === 'pendiente' && (
             <>
               <label className="campo"><span>Foto de evidencia (opcional)</span>
@@ -1357,7 +1385,7 @@ function Cobranza({ usuario }) {
       <table className="tabla-densa">
         <thead>
           <tr>
-            <th>Folio</th><th>Cliente</th><th>Fecha</th><th>Ruta</th>
+            <th>Folio</th><th>Cliente</th><th>PO cliente</th><th>Fecha</th><th>Ruta</th>
             {esAdmin && <th className="num">Ingreso</th>}
             {colVence && <th>Vence</th>}
           </tr>
@@ -1367,6 +1395,7 @@ function Cobranza({ usuario }) {
             <tr key={v.id} onClick={() => setDetalle(v)}>
               <td><strong>{v.folio}</strong></td>
               <td>{v.clienteNombre}</td>
+              <td className="muted">{v.ordenClienteTexto}</td>
               <td className="muted">{v.fecha}</td>
               <td className="muted">{v.origen} → {v.destino}</td>
               {esAdmin && <td className="num">{dinero(v.precio, 'USD')}</td>}
@@ -1495,6 +1524,7 @@ function CobranzaDetalle({ viaje, usuario, onVolver }) {
         <div className="expediente-seccion">
           <div className="expediente-seccion-titulo">Datos generales</div>
           <div className="expediente-fila"><span>Cliente</span><span>{viaje.clienteNombre} ({cliente?.diasCredito ?? 0} días de crédito)</span></div>
+          {viaje.ordenClienteTexto && <div className="expediente-fila"><span>PO / # orden cliente</span><span>{viaje.ordenClienteTexto}</span></div>}
           <div className="expediente-fila"><span>Ruta</span><span>{viaje.origen} → {viaje.destino} · {viaje.fecha}</span></div>
           {usuario?.rol === 'admin' && (
             <div className="expediente-fila">
