@@ -13,7 +13,7 @@ import { exportarXlsx } from './utils/exportarXlsx'
 
 // dos FKs de cargas_diesel a unidades (la unidad que carga y, opcional, la caja refrigerada)
 const SELECT_CARGA = `*,
-  unidades!cargas_diesel_unidad_id_fkey(numero),
+  unidades!cargas_diesel_unidad_id_fkey(numero, unidad_lectura),
   operadores(nombre, email),
   viajes(folio),
   caja:unidades!cargas_diesel_caja_id_fkey(numero)`
@@ -30,7 +30,9 @@ const mapCarga = (c) => ({
   costoLitro: Number(c.costo_litro) || 0,
   costoTotal: Number(c.costo_total) || 0,
   odometro: Number(c.odometro) || 0,
-  unidadLectura: 'km', // homologado -- ver CampoOdometro, ya no depende de la unidad física
+  // la unidad que carga puede ser un camión (km/mi, homologado por CampoOdometro) o
+  // directamente una caja refrigerada (hrs de la termo, sin homologar -- ver aKm)
+  unidadLectura: c.unidades?.unidad_lectura === 'hrs' ? 'hrs' : 'km',
   rendimiento: c.rendimiento != null ? Number(c.rendimiento) : null,
   esAtipico: c.es_atipico,
   viajeId: c.viaje_id,
@@ -133,6 +135,9 @@ function CargaDiesel({ usuario }) {
   }, [usuario.rol])
 
   const unidad = unidades.find((u) => u.id === f.unidadId)
+  // la caja refrigerada también puede cargar diésel sola (sin camión): su lectura es
+  // horómetro (hrs de la termo), no odómetro -- ver CampoOdometro, que solo maneja km/mi
+  const esReefer = unidad?.tipo === 'reefer'
   const litros = Number(f.litros) || 0
   const costoLitro = Number(f.costoLitro) || 0
   const litrosCaja = Number(f.litrosCaja) || 0
@@ -143,9 +148,10 @@ function CargaDiesel({ usuario }) {
     if (!f.unidadId) { alert('Selecciona la unidad'); return }
     if (!(litros > 0) || !(costoLitro > 0)) { alert('Litros y costo por litro son obligatorios'); return }
     const odometro = Number(f.odometro)
-    if (!(odometro > 0)) { alert('Escribe el odómetro actual'); return }
+    if (!(odometro > 0)) { alert(esReefer ? 'Escribe las horas de la termo' : 'Escribe el odómetro actual'); return }
     if (unidad?.ultimaLectura != null && odometro < unidad.ultimaLectura) {
-      alert(`El odómetro (${odometro.toLocaleString()}) no puede ser menor a la última lectura (${unidad.ultimaLectura.toLocaleString()})`)
+      const etiqueta = esReefer ? 'Las horas' : 'El odómetro'
+      alert(`${etiqueta} (${odometro.toLocaleString()}) no puede ser menor a la última lectura (${unidad.ultimaLectura.toLocaleString()})`)
       return
     }
     if (f.conCaja && !f.cajaId) { alert('Selecciona la caja refrigerada'); return }
@@ -184,13 +190,23 @@ function CargaDiesel({ usuario }) {
       <BarraAcciones onGuardar={guardar} guardando={guardando} guardarLabel="Registrar carga" />
       <h2>Carga de diésel</h2>
       <SelectorUnidad
-        unidades={unidades.filter((u) => u.tipo === 'truck')}
+        unidades={unidades.filter((u) => u.tipo === 'truck' || u.tipo === 'reefer')}
         value={f.unidadId}
-        onChange={(id) => setF({ ...f, unidadId: id })}
+        onChange={(id) => {
+          const u = unidades.find((x) => x.id === id)
+          // si cambia a una caja refrigerada, "cargué también a la caja" ya no aplica
+          // (una caja no puede llevar otra caja) -- se limpia por si venía marcado
+          setF(u?.tipo === 'reefer'
+            ? { ...f, unidadId: id, odometro: '', conCaja: false, cajaId: '', horasTermo: '', litrosCaja: '' }
+            : { ...f, unidadId: id, odometro: '' })
+          setResetKey((k) => k + 1)
+        }}
         placeholder="Selecciona tu unidad…"
       />
       {unidad?.ultimaLectura != null && (
-        <p className="muted tc-nota">Última lectura registrada: {unidad.ultimaLectura.toLocaleString()} km</p>
+        <p className="muted tc-nota">
+          Última lectura registrada: {unidad.ultimaLectura.toLocaleString()} {esReefer ? 'hrs' : 'km'}
+        </p>
       )}
       {unidad && <BadgeMantenimiento unidad={unidad} />}
       {viajesEnCurso.length > 0 && (
@@ -229,19 +245,27 @@ function CargaDiesel({ usuario }) {
           <input type="number" inputMode="decimal" min="0" step="0.01" value={f.costoLitro} onChange={set('costoLitro')} />
         </label>
       </div>
-      <CampoOdometro
-        key={resetKey}
-        label="Odómetro" unidadPorDefecto={unidad?.unidadLectura}
-        onChangeKm={(km) => setF((prev) => ({ ...prev, odometro: km ?? '' }))}
-      />
+      {esReefer ? (
+        <label className="campo"><span>Horas de la termo</span>
+          <input type="number" inputMode="decimal" min="0" value={f.odometro} onChange={set('odometro')} />
+        </label>
+      ) : (
+        <CampoOdometro
+          key={resetKey}
+          label="Odómetro" unidadPorDefecto={unidad?.unidadLectura}
+          onChangeKm={(km) => setF((prev) => ({ ...prev, odometro: km ?? '' }))}
+        />
+      )}
       {costoTotal > 0 && <p className="total-detalle">Costo de la carga: {dinero(costoTotal, 'MXN')}</p>}
 
-      <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-        <input type="checkbox" style={{ width: 'auto' }} checked={f.conCaja}
-          onChange={(e) => setF({ ...f, conCaja: e.target.checked })} />
-        <span style={{ margin: 0 }}>Cargué diésel a la caja refrigerada</span>
-      </label>
-      {f.conCaja && (
+      {!esReefer && (
+        <label className="campo" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <input type="checkbox" style={{ width: 'auto' }} checked={f.conCaja}
+            onChange={(e) => setF({ ...f, conCaja: e.target.checked })} />
+          <span style={{ margin: 0 }}>Cargué diésel a la caja refrigerada</span>
+        </label>
+      )}
+      {!esReefer && f.conCaja && (
         <div className="linea">
           <label className="campo"><span>Caja refrigerada</span>
             <select value={f.cajaId} onChange={set('cajaId')}>
