@@ -10,7 +10,17 @@ export const METODOS = [
   ['tarjeta', 'Tarjeta'],
   ['transferencia', 'Transferencia'],
 ]
+const METODO_LABEL = Object.fromEntries(METODOS)
 export const ESTATUS = { en_proceso: 'En proceso', completado: 'Completado' }
+
+// datos fiscales propios para el encabezado de la orden de compra impresa -- no cambian
+// seguido, no vale la pena una fila de config editable para esto
+const EMPRESA = {
+  nombreComercial: 'Nuñez Transpor',
+  razonSocial: 'Rodolfo Nuñez Valdez',
+  rfc: 'NUVR601109KK1',
+  direccion: 'Av Ignacio Zaragoza # 530, Col. Bustamante, Ensenada, Baja California, CP 22840',
+}
 
 // tc = pesos por 1 USD (config.tipo_cambio_usd). Empresa fronteriza: todo se consolida en USD.
 export const aUSD = (monto, moneda, tc) => (moneda === 'USD' ? monto : r2(monto / (tc || 1)))
@@ -115,7 +125,12 @@ export const useTipoCambio = () => {
 
 // selects con los embeds de FK que necesita la UI (evita denormalizar unidadNumero/proveedor/etc.)
 export const SELECT_WO = '*, unidades(numero), perfiles(email), wo_llantas(accion, posiciones, notas)'
-export const SELECT_COMPRA = '*, compra_conceptos(*), unidades(numero), proveedores(razon_social), work_orders(folio), perfiles(email)'
+// perfiles!compras_creado_por_fkey: compras ahora tiene 2 FKs a perfiles (creado_por y
+// modificado_por, ver migración compras_modificado) -- sin el hint PostgREST responde 300
+// Multiple Choices porque ya no puede adivinar cuál relación es "perfiles(email)"
+export const SELECT_COMPRA = `*, compra_conceptos(*), unidades(numero),
+  proveedores(razon_social, rfc, direccion, contacto1_nombre, contacto1_tel_oficina, contacto1_tel_celular, contacto1_correo),
+  work_orders(folio), perfiles!compras_creado_por_fkey(email)`
 
 export const mapWO = (w) => ({
   id: w.id,
@@ -162,6 +177,10 @@ export const mapCompra = (c) => ({
   litrosFacturados: c.litros_facturados ?? 0,
   notas: c.notas ?? '',
   creadoPor: c.perfiles?.email ?? '',
+  // proveedor cambió el costo después de creada la PO -- solo costos, nunca conceptos/cantidades
+  // (eso requiere una PO nueva) -- ver EditarCostosPO
+  modificado: Boolean(c.modificado),
+  modificadoAt: c.modificado_at,
   tipoCambioUsado: Number(c.tipo_cambio_usado),
   subtotalGeneralUSD: aUSD(Number(c.subtotal), c.moneda, Number(c.tipo_cambio_usado)),
   ivaGeneralUSD: aUSD(Number(c.iva), c.moneda, Number(c.tipo_cambio_usado)),
@@ -170,10 +189,15 @@ export const mapCompra = (c) => ({
   grupos: [{
     proveedorId: c.proveedor_id,
     proveedor: c.proveedores?.razon_social ?? '',
+    proveedorRfc: c.proveedores?.rfc ?? '',
+    proveedorDireccion: c.proveedores?.direccion ?? '',
+    proveedorContacto: c.proveedores?.contacto1_nombre ?? '',
+    proveedorTelefono: c.proveedores?.contacto1_tel_oficina || c.proveedores?.contacto1_tel_celular || '',
+    proveedorCorreo: c.proveedores?.contacto1_correo ?? '',
     moneda: c.moneda,
     folioFactura: c.folio_factura ?? '',
     conceptos: (c.compra_conceptos ?? []).map((x) => ({
-      concepto: x.concepto, cantidad: Number(x.cantidad), costoUnitario: Number(x.costo_unitario),
+      id: x.id, concepto: x.concepto, cantidad: Number(x.cantidad), costoUnitario: Number(x.costo_unitario),
       tasaIVA: Number(x.tasa_iva) * 100, subtotal: Number(x.subtotal), iva: Number(x.iva), total: Number(x.total),
     })),
     subtotal: Number(c.subtotal), iva: Number(c.iva), total: Number(c.total), totalUSD: Number(c.total_usd),
@@ -317,7 +341,7 @@ export default function Compras({ usuario, vista }) {
   if (vista === 'nueva-compra') return <CompraForm usuario={usuario} />
   // también se monta desde el grupo de nav "dispatch"; compras solo puede consultar, no editar
   if (vista === 'unidades') return <Unidades soloLectura={usuario.rol === 'compras'} />
-  if (vista === 'cuentas-pagar') return <CuentasPorPagar />
+  if (vista === 'cuentas-pagar') return <CuentasPorPagar usuario={usuario} />
   return <WorkOrders usuario={usuario} />
 }
 
@@ -385,9 +409,11 @@ function WorkOrders({ usuario }) {
 
 function WODetalle({ usuario, wo, onVolver }) {
   const [comprando, setComprando] = useState(false)
+  const [imprimiendo, setImprimiendo] = useState(null)
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('wo_id', wo.id)) ?? []
 
   if (comprando) return <CompraForm usuario={usuario} wo={wo} onDone={() => setComprando(false)} />
+  if (imprimiendo) return <VistaImpresionOrdenCompra compra={imprimiendo} onCerrar={() => setImprimiendo(null)} />
 
   const totalUSD = r2(compras.reduce((s, c) => s + (c.totalGeneralUSD ?? 0), 0))
 
@@ -428,13 +454,17 @@ function WODetalle({ usuario, wo, onVolver }) {
       {compras.length > 0 && (
         <div className="tabla-scroll">
           <table className="tabla-densa">
-            <thead><tr><th>Fecha</th><th>Proveedor</th><th className="num">Total</th></tr></thead>
+            <thead><tr><th>Fecha</th><th>Proveedor</th><th className="num">Total</th><th></th></tr></thead>
             <tbody>
               {compras.map((c) => (
                 <tr key={c.id}>
-                  <td className="muted">{c.fecha}</td>
+                  <td className="muted">
+                    {c.fecha}
+                    {c.modificado && <> <span className="badge vencido">MODIFICADO</span></>}
+                  </td>
                   <td>{(c.grupos ?? []).map((g) => g.proveedor).filter(Boolean).join(', ')}</td>
                   <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
+                  <td><button type="button" className="btn-secundario" onClick={() => setImprimiendo(c)}>Imprimir PO</button></td>
                 </tr>
               ))}
             </tbody>
@@ -495,6 +525,91 @@ const calcGrupo = (g, tc, proveedores) => {
   }
 }
 
+/* ---------- Orden de compra (vista imprimible, un PO = una compra/proveedor) ---------- */
+
+function VistaImpresionOrdenCompra({ compra, onCerrar }) {
+  const g = compra.grupos[0]
+  const proveedor = (useProveedores() ?? []).find((p) => p.id === g.proveedorId)
+  const dias = proveedor?.diasCredito ?? 0
+
+  return (
+    <div className="orden-compra">
+      <BarraAcciones className="no-imprimir" onAtras={onCerrar}
+        extra={<button type="button" className="btn-primario" onClick={() => window.print()}>Imprimir / Guardar PDF</button>} />
+
+      <div className="oc-encabezado">
+        <div className="oc-titulo">
+          <h1>Orden de Compra</h1>
+          <span className="oc-folio">PO # {compra.poFolio}</span>
+          {compra.modificado && <span className="badge vencido">MODIFICADO — revisar</span>}
+        </div>
+        <div className="oc-fecha">Fecha: {compra.fecha}</div>
+      </div>
+
+      <div className="oc-partes">
+        <div className="oc-parte">
+          <div className="oc-parte-titulo">Proveedor</div>
+          <strong>{g.proveedor}</strong>
+          {g.proveedorRfc && <div>RFC: {g.proveedorRfc}</div>}
+          {g.proveedorDireccion && <div>{g.proveedorDireccion}</div>}
+          {g.proveedorContacto && <div>Contacto: {g.proveedorContacto}</div>}
+          {g.proveedorTelefono && <div>Tel: {g.proveedorTelefono}</div>}
+          {g.proveedorCorreo && <div>{g.proveedorCorreo}</div>}
+        </div>
+        <div className="oc-parte">
+          <div className="oc-parte-titulo">{EMPRESA.nombreComercial}</div>
+          <strong>{EMPRESA.razonSocial}</strong>
+          <div>RFC: {EMPRESA.rfc}</div>
+          <div>{EMPRESA.direccion}</div>
+        </div>
+      </div>
+
+      <div className="oc-info">
+        <span>Unidad: <strong>{compra.esGeneral ? 'General' : (compra.unidadNumero || '—')}</strong></span>
+        {compra.woNumero && <span>WO: <strong>{compra.woNumero}</strong></span>}
+        <span>Pago: <strong>{METODO_LABEL[compra.metodoPago] ?? compra.metodoPago}</strong></span>
+        <span>Condiciones: <strong>{compra.metodoPago === 'credito_proveedor' ? `Crédito ${dias} días` : 'Contado'}</strong></span>
+      </div>
+
+      <table className="oc-tabla">
+        <thead>
+          <tr>
+            <th>#</th><th>Concepto</th><th className="num">Cantidad</th>
+            <th className="num">Costo unit.</th><th className="num">IVA %</th>
+            <th className="num">Importe IVA</th><th className="num">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {g.conceptos.map((c, i) => (
+            <tr key={i}>
+              <td>{i + 1}</td>
+              <td>{c.concepto}</td>
+              <td className="num">{c.cantidad}</td>
+              <td className="num">{dinero(c.costoUnitario, g.moneda)}</td>
+              <td className="num">{c.tasaIVA}%</td>
+              <td className="num">{dinero(c.iva, g.moneda)}</td>
+              <td className="num">{dinero(c.total, g.moneda)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      <div className="oc-totales">
+        <div><span>Subtotal</span><span>{dinero(g.subtotal, g.moneda)}</span></div>
+        <div><span>IVA</span><span>{dinero(g.iva, g.moneda)}</span></div>
+        <div className="oc-total-final"><span>Total</span><span>{dinero(g.total, g.moneda)}</span></div>
+      </div>
+
+      {compra.notas && <p className="oc-notas">Notas: {compra.notas}</p>}
+
+      <div className="oc-firmas">
+        <div className="oc-firma"><span>Autorizó — {EMPRESA.nombreComercial}</span></div>
+        <div className="oc-firma"><span>Recibido — {g.proveedor}</span></div>
+      </div>
+    </div>
+  )
+}
+
 const sumaDias = (fecha, dias) => {
   const d = new Date(fecha + 'T00:00')
   d.setDate(d.getDate() + dias)
@@ -507,6 +622,10 @@ function CompraForm({ usuario, wo, onDone }) {
   const proveedores = useProveedores() ?? []
   const [f, setF] = useState(() => compraVacia(wo))
   const [guardando, setGuardando] = useState(false)
+  // compras recién guardadas (con folio real ya asignado por Postgres) -- se muestran
+  // en una confirmación con "Imprimir PO" en vez de salir del formulario de inmediato
+  const [guardadas, setGuardadas] = useState(null)
+  const [imprimiendo, setImprimiendo] = useState(null)
 
   const set = (campo) => (e) => setF({ ...f, [campo]: e.target.value })
 
@@ -593,12 +712,12 @@ function CompraForm({ usuario, wo, onDone }) {
         )
         if (errConceptos) throw errConceptos
       }
-      if (onDone) {
-        onDone()
-      } else {
-        alert('Compra guardada')
-        setF(compraVacia(null))
-      }
+      // recarga con SELECT_COMPRA para tener el folio real (lo asigna la secuencia de
+      // Postgres al insertar) y los datos del proveedor listos para imprimir la PO
+      const { data: nuevas, error: errFetch } = await supabase.from('compras')
+        .select(SELECT_COMPRA).in('id', filas.map((x) => x.id))
+      if (errFetch) throw errFetch
+      setGuardadas(nuevas.map(mapCompra))
     } catch (e) {
       console.error(e)
       alert('Error al guardar: ' + e.message)
@@ -607,8 +726,38 @@ function CompraForm({ usuario, wo, onDone }) {
     }
   }
 
+  if (imprimiendo) return <VistaImpresionOrdenCompra compra={imprimiendo} onCerrar={() => setImprimiendo(null)} />
+
+  if (guardadas) {
+    return (
+      <div>
+        <BarraAcciones />
+        <h2>Compra guardada</h2>
+        {guardadas.map((c) => (
+          <div key={c.id} className="tarjeta detalle">
+            <div className="tarjeta-top">
+              <strong>{c.poFolio}</strong>
+              <strong>{dinero(c.totalGeneralUSD, 'USD')}</strong>
+            </div>
+            <div className="muted">{c.grupos[0].proveedor}</div>
+            <button type="button" className="btn-secundario" onClick={() => setImprimiendo(c)}>Imprimir PO</button>
+          </div>
+        ))}
+        <div className="acciones">
+          <button type="button" className="btn-primario" onClick={() => {
+            if (onDone) { onDone(); return }
+            setGuardadas(null)
+            setF(compraVacia(null))
+          }}>
+            Terminar
+          </button>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div>
+    <div className="expediente">
       <BarraAcciones onAtras={onDone} onGuardar={guardar} guardando={guardando} guardarDisabled={!tc} guardarLabel="Guardar compra" />
       <h2>{wo ? `Compra para ${wo.wo}` : 'Nueva compra directa'}</h2>
 
@@ -1029,8 +1178,91 @@ function AdjuntoCompra({ compra, campo, url, label, carpeta }) {
   )
 }
 
-function CuentasPorPagar() {
+// proveedor cambió el precio después de creada la PO -- solo costo unitario es editable aquí
+// (concepto/cantidad no, si cambia lo que se compra es una PO nueva). Al guardar siempre marca
+// modificado=true: entrar a esta pantalla y guardar ES el evento de modificación a revisar.
+function EditarCostosPO({ compra, usuario, onDone }) {
+  const g = compra.grupos[0]
+  const [costos, setCostos] = useState(g.conceptos.map((c) => ({ ...c })))
+  const [guardando, setGuardando] = useState(false)
+
+  const setCosto = (i, valor) => setCostos(costos.map((c, j) => (j === i ? { ...c, costoUnitario: valor } : c)))
+
+  const calc = costos.map((c) => {
+    const costoUnitario = Number(c.costoUnitario) || 0
+    const subtotal = r2(c.cantidad * costoUnitario)
+    const iva = r2(subtotal * c.tasaIVA / 100)
+    return { ...c, costoUnitario, subtotal, iva, total: r2(subtotal + iva) }
+  })
+  const subtotal = r2(calc.reduce((s, c) => s + c.subtotal, 0))
+  const iva = r2(calc.reduce((s, c) => s + c.iva, 0))
+  const total = r2(subtotal + iva)
+
+  const guardar = async () => {
+    if (calc.some((c) => !(c.costoUnitario > 0))) { alert('El costo unitario debe ser mayor a 0'); return }
+    setGuardando(true)
+    try {
+      for (const c of calc) {
+        const { error } = await supabase.from('compra_conceptos').update({ costo_unitario: c.costoUnitario }).eq('id', c.id)
+        if (error) throw error
+      }
+      const { error: errCompra } = await supabase.from('compras').update({
+        subtotal, iva, total, total_usd: aUSD(total, g.moneda, compra.tipoCambioUsado),
+        modificado: true, modificado_at: new Date().toISOString(), modificado_por: usuario.id,
+      }).eq('id', compra.id)
+      if (errCompra) throw errCompra
+      onDone()
+    } catch (e) {
+      console.error(e)
+      alert('Error: ' + e.message)
+    } finally {
+      setGuardando(false)
+    }
+  }
+
+  return (
+    <div className="expediente">
+      <h2>Editar costos — {compra.poFolio}</h2>
+      <p className="muted">
+        Solo costo unitario. Si cambian piezas, conceptos o cantidades, registra una PO nueva.
+      </p>
+      <div className="expediente-seccion">
+        <div className="expediente-fila"><span>Proveedor</span><span>{g.proveedor}</span></div>
+      </div>
+      <div className="tabla-scroll">
+        <table className="tabla-densa">
+          <thead>
+            <tr><th>Concepto</th><th className="num">Cantidad</th><th className="num">Costo unit.</th><th className="num">Total</th></tr>
+          </thead>
+          <tbody>
+            {calc.map((c, i) => (
+              <tr key={c.id}>
+                <td>{c.concepto}</td>
+                <td className="num">{c.cantidad}</td>
+                <td className="num">
+                  <input type="number" inputMode="decimal" min="0" step="0.01" style={{ width: '7rem', textAlign: 'right' }}
+                    value={costos[i].costoUnitario} onChange={(e) => setCosto(i, e.target.value)} />
+                </td>
+                <td className="num">{dinero(c.total, g.moneda)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="total-detalle">Subtotal {dinero(subtotal, g.moneda)} · IVA {dinero(iva, g.moneda)} · Total {dinero(total, g.moneda)}</p>
+      <div className="acciones">
+        <button className="btn-completar" disabled={guardando} onClick={guardar}>
+          {guardando ? 'Guardando…' : 'Guardar costos'}
+        </button>
+        <button className="btn-secundario" disabled={guardando} onClick={onDone}>Cancelar</button>
+      </div>
+    </div>
+  )
+}
+
+function CuentasPorPagar({ usuario }) {
   const [pagando, setPagando] = useState(null) // compra en proceso de pago
+  const [editando, setEditando] = useState(null) // compra en edición de costos
   const [comprobante, setComprobante] = useState(null)
   const [guardando, setGuardando] = useState(false)
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('tipo_pago', 'credito'))
@@ -1047,6 +1279,15 @@ function CuentasPorPagar() {
     const clave = c.fechaVence ? lunesDe(c.fechaVence) : 'sin-fecha'
     ;(semanas[clave] ??= []).push(c)
   })
+
+  // mismo criterio que badgeVence en Cobranza (viajes.jsx): vencida / vence en <=7 días / normal
+  const badgeVence = (fechaVence) => {
+    if (!fechaVence) return '—'
+    const dias = Math.ceil((new Date(fechaVence + 'T00:00') - new Date()) / 86400000)
+    if (dias < 0) return <span className="badge vencido">Vencida hace {-dias} d</span>
+    if (dias <= 7) return <span className="badge alerta">Vence en {dias} d</span>
+    return <span className="muted">Vence {fechaVence}</span>
+  }
 
   const pagar = async () => {
     setGuardando(true)
@@ -1070,7 +1311,7 @@ function CuentasPorPagar() {
     }
   }
 
-  const hoyStr = hoy()
+  if (editando) return <EditarCostosPO compra={editando} usuario={usuario} onDone={() => setEditando(null)} />
 
   if (pagando) {
     return (
@@ -1114,23 +1355,23 @@ function CuentasPorPagar() {
               <thead>
                 <tr>
                   <th>Folio</th><th>Proveedor</th><th>Compra</th><th>Vence</th>
-                  <th className="num">Total</th><th>Factura</th><th>XML</th><th></th>
+                  <th className="num">Total</th><th>Factura</th><th>XML</th><th></th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {lista.map((c) => (
                   <tr key={c.id}>
-                    <td><strong>{c.poFolio || c.fecha}</strong></td>
+                    <td>
+                      <strong>{c.poFolio || c.fecha}</strong>
+                      {c.modificado && <> <span className="badge vencido">MODIFICADO</span></>}
+                    </td>
                     <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
                     <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
-                    <td className="muted">
-                      {c.fechaVence
-                        ? <>{c.fechaVence < hoyStr && <span className="punto-estado vencido" />}{c.fechaVence}</>
-                        : '—'}
-                    </td>
+                    <td className="muted">{badgeVence(c.fechaVence)}</td>
                     <td className="num">{dinero(c.totalGeneralUSD, 'USD')}</td>
                     <td><AdjuntoCompra compra={c} campo="factura_path" url={c.facturaURL} label="factura" carpeta="factura" /></td>
                     <td><AdjuntoCompra compra={c} campo="xml_path" url={c.xmlURL} label="XML" carpeta="xml" /></td>
+                    <td><button type="button" className="btn-secundario" onClick={() => setEditando(c)}>Editar costos</button></td>
                     <td><button type="button" className="btn-secundario" onClick={() => setPagando(c)}>Registrar pago</button></td>
                   </tr>
                 ))}
@@ -1154,7 +1395,10 @@ function CuentasPorPagar() {
             <tbody>
               {pagadas.map((c) => (
                 <tr key={c.id}>
-                  <td><strong>{c.poFolio || c.fecha}</strong></td>
+                  <td>
+                    <strong>{c.poFolio || c.fecha}</strong>
+                    {c.modificado && <> <span className="badge vencido">MODIFICADO</span></>}
+                  </td>
                   <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
                   <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
                   <td className="muted">{c.pagadoAt}</td>

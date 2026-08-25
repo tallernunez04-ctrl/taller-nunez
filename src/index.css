@@ -527,6 +527,54 @@ td.num, th.num { text-align: right; }
   body { background: #fff; }
 }
 
+/* --- orden de compra imprimible: mismo patrón que los recibos de nómina --- */
+.orden-compra {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1.5rem;
+  max-width: 800px;
+  margin: 1rem auto 0;
+  font-size: 0.9rem;
+}
+.oc-encabezado {
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-bottom: 3px solid var(--accent);
+  padding-bottom: 0.75rem; margin-bottom: 1rem;
+}
+.oc-titulo { display: flex; align-items: baseline; gap: 1rem; }
+.oc-titulo h1 { margin: 0; font-size: 1.3rem; color: var(--secundario); }
+.oc-folio { font-weight: 700; }
+.oc-fecha { color: var(--muted); }
+.oc-partes {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+  margin-bottom: 1rem;
+}
+.oc-parte { line-height: 1.5; }
+.oc-parte-titulo {
+  font-weight: 700; text-transform: uppercase; font-size: 0.75rem;
+  color: var(--muted); margin-bottom: 0.25rem;
+}
+.oc-info {
+  display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem;
+  border-top: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  padding: 0.6rem 0; margin-bottom: 1rem;
+}
+.oc-tabla { width: 100%; border-collapse: collapse; margin-bottom: 1rem; }
+.oc-tabla th, .oc-tabla td { border: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; }
+.oc-tabla th { background: var(--input); font-size: 0.8rem; }
+.oc-tabla .num, .oc-totales .num { text-align: right; }
+.oc-totales { margin-left: auto; width: 260px; }
+.oc-totales div { display: flex; justify-content: space-between; padding: 0.2rem 0; }
+.oc-total-final { border-top: 2px solid var(--text); font-weight: 700; margin-top: 0.25rem; padding-top: 0.4rem !important; }
+.oc-notas { margin-top: 1rem; color: var(--muted); }
+.oc-firmas { display: flex; justify-content: space-between; gap: 2rem; margin-top: 3rem; }
+.oc-firma { flex: 1; border-top: 1px solid var(--text); padding-top: 0.3rem; text-align: center; font-size: 0.8rem; color: var(--muted); }
+
+@media print {
+  .orden-compra { border: none; padding: 0; max-width: none; }
+}
+
 /* ---------- modal (cambio de custodia) ---------- */
 .modal-fondo {
   position: fixed; inset: 0; z-index: 50;
@@ -657,3 +705,38 @@ td.num, th.num { text-align: right; }
   border-radius: var(--radius-sm);
   background: color-mix(in srgb, var(--accent) 78%, white);
 }
+
+/* botones dentro de filas de tabla densa (Editar costos, Registrar pago, +factura/+XML...) --
+   estaban heredando el tamaño de botón de formulario (padding grande, margin-top) y se veían
+   fuera de lugar en una fila de 32px. Cubre <button> y <label> (AdjuntoCompra es un label). */
+.tabla-densa .btn-primario,
+.tabla-densa .btn-secundario,
+.tabla-densa .btn-completar {
+  margin-top: 0;
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* CompraForm ("Nueva compra") se quedó fuera del rediseño denso -- todavía usaba .campo/.linea
+   de las pantallas mobile (chofer), con inputs, tarjetas y botones de bloque grandes. Se aprieta
+   aquí scoped a .expediente para no afectar Mis Viajes/Diésel, que también usan esas clases. */
+.expediente .campo { margin-bottom: var(--sp-2); }
+.expediente .campo > span { font-size: var(--fs-sm); margin-bottom: 2px; }
+.expediente .campo input,
+.expediente .campo select,
+.expediente .campo textarea {
+  font-size: var(--fs-md);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+}
+.expediente textarea { min-height: 3rem; }
+.expediente .grupo-proveedor { padding: var(--sp-3); border-radius: var(--radius-md); margin-bottom: var(--sp-3); }
+.expediente .linea { padding: var(--sp-2) var(--sp-3) var(--sp-1); border-radius: var(--radius-md); margin-bottom: var(--sp-2); }
+.expediente .fila-concepto, .expediente .fila-2, .expediente .fila-3 { gap: var(--sp-2); }
+.expediente .totales { padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-md); font-size: var(--fs-md); }
+.expediente .btn-bloque { padding: var(--sp-1) var(--sp-2); font-size: var(--fs-sm); margin-top: 0; border-radius: var(--radius-sm); }
+.expediente h3 { font-size: var(--fs-lg); margin: var(--sp-3) 0 var(--sp-2); }
