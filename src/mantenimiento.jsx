@@ -30,40 +30,56 @@ export default function MantenimientoPreventivo({ usuario }) {
 
   return (
     <div>
-      <h2>Mantenimiento Preventivo</h2>
+      <div className="toolbar-lista">
+        <h2>Mantenimiento Preventivo</h2>
+      </div>
       {pendientes.length === 0 && (
         <p className="muted vacio">No hay unidades próximas o vencidas de servicio programado.</p>
       )}
-      {pendientes.map(({ u, estatus, restante }) => {
-        const unidadRestante = u.unidadLectura === 'hrs' ? 'hrs' : 'km'
-        return (
-          <button key={u.id} className="tarjeta" onClick={() => setAbierta(u)}>
-            <div className="tarjeta-top">
-              <strong>{u.numero}</strong>
-              <span className={estatus === 'vencido' ? 'badge vencido' : 'badge alerta'}>
-                {estatus === 'vencido' ? 'Vencido' : 'Próximo'}
-              </span>
-            </div>
-            <div className="muted">
-              {estatus === 'vencido'
-                ? `Vencido hace ${Math.abs(restante).toLocaleString()} ${unidadRestante}`
-                : `Faltan ${restante.toLocaleString()} ${unidadRestante}`}
-            </div>
-          </button>
-        )
-      })}
+      {pendientes.length > 0 && (
+        <div className="tabla-scroll">
+          <table className="tabla-densa">
+            <thead>
+              <tr><th>Unidad</th><th>Estatus</th><th className="num">Restante</th></tr>
+            </thead>
+            <tbody>
+              {pendientes.map(({ u, estatus, restante }) => {
+                const unidadRestante = u.unidadLectura === 'hrs' ? 'hrs' : 'km'
+                return (
+                  <tr key={u.id} onClick={() => setAbierta(u)}>
+                    <td><strong>{u.numero}</strong></td>
+                    <td>
+                      <span className={'punto-estado ' + estatus} />
+                      {estatus === 'vencido' ? 'Vencido' : 'Próximo'}
+                    </td>
+                    <td className="num muted">
+                      {estatus === 'vencido'
+                        ? `Hace ${Math.abs(restante).toLocaleString()} ${unidadRestante}`
+                        : `Faltan ${restante.toLocaleString()} ${unidadRestante}`}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {sinConfigurar.length > 0 && (
         <>
           <h3 className="muted">Sin intervalo configurado</h3>
-          {sinConfigurar.map((u) => (
-            <button key={u.id} className="tarjeta" onClick={() => setAbierta(u)}>
-              <div className="tarjeta-top">
-                <strong>{u.numero}</strong>
-                <span className="badge inactivo">Sin configurar</span>
-              </div>
-            </button>
-          ))}
+          <div className="tabla-scroll">
+            <table className="tabla-densa">
+              <tbody>
+                {sinConfigurar.map((u) => (
+                  <tr key={u.id} onClick={() => setAbierta(u)}>
+                    <td><strong>{u.numero}</strong></td>
+                    <td className="muted"><span className="punto-estado sin_configurar" /> Sin configurar</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </>
       )}
     </div>

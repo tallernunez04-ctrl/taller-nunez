@@ -1,13 +1,14 @@
-/* Paleta oficial Transportes Nuñez — tema claro */
+/* Paleta oficial Transportes Nuñez — tema claro ERP denso (slate/azul, ver refactor 2026-08-28) */
 :root {
   color-scheme: light;
-  --bg: #F0F0F0;
+  --bg: #F8FAFC;
   --surface: #FFFFFF;
-  --input: #F7F7F7;
-  --border: #DDDDDD;
-  --text: #1A1A1A;
-  --muted: #6B6B6B;
-  --accent: #C9A84C;
+  --input: #F8FAFC;
+  --border: #CBD5E1;
+  --text: #0F172A;
+  --muted: #64748B;
+  --accent: #1E40AF;
+  --accent-text: #FFFFFF;
   --secundario: #7A1C2E;
   --danger: #B03A3A;
 
@@ -68,16 +69,17 @@ h1, h2 { margin: 0 0 0.5rem; }
 button {
   font: inherit;
   cursor: pointer;
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
   border: 1px solid var(--border);
 }
 
 .btn-primario {
   background: var(--accent);
-  color: #1A1A1A;
+  color: var(--accent-text);
   border: none;
-  font-weight: 700;
-  padding: 0.85rem 1.5rem;
+  font-weight: 600;
+  padding: var(--sp-1) var(--sp-3);
+  border-radius: var(--radius-sm);
   margin-top: 1rem;
 }
 
@@ -160,7 +162,7 @@ button {
     width: 100%;
     background: transparent;
     border: none;
-    border-radius: 0.5rem;
+    border-radius: var(--radius-sm);
     color: var(--text);
     padding: 0.55rem 0.7rem;
     font-size: 0.9rem;
@@ -168,11 +170,11 @@ button {
     white-space: nowrap;
     overflow: hidden;
   }
-  .sidebar-item:hover { background: var(--input); }
+  .sidebar-item:hover { background: var(--bg); }
   .sidebar-item.activo {
     background: var(--accent);
-    color: #1A1A1A;
-    font-weight: 700;
+    color: var(--accent-text);
+    font-weight: 600;
   }
   .sidebar-icono { font-size: 1.05rem; width: 1.4rem; text-align: center; flex-shrink: 0; }
 }
@@ -241,7 +243,7 @@ input, select, textarea {
   width: 100%;
   background: var(--input);
   border: 1px solid var(--border);
-  border-radius: 0.5rem;
+  border-radius: var(--radius-sm);
   color: var(--text);
   padding: 0.65rem 0.75rem;
   font: inherit;
@@ -286,20 +288,21 @@ textarea { min-height: 4.5rem; resize: vertical; }
 .barra-acciones .btn-completar { margin-top: 0; }
 .btn-completar {
   background: var(--accent);
-  color: #1A1A1A;
+  color: var(--accent-text);
   border: none;
-  font-weight: 700;
+  font-weight: 600;
   padding: 0.85rem;
+  border-radius: var(--radius-sm);
 }
 
-/* --- lista de WOs --- */
+/* --- lista de WOs (mobile chofer/taller, ver App.jsx) --- */
 .tarjeta {
   display: block;
   width: 100%;
   text-align: left;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   padding: 0.9rem 1rem;
   margin-bottom: 0.75rem;
   color: var(--text);
@@ -333,7 +336,7 @@ textarea { min-height: 4.5rem; resize: vertical; }
 }
 .chip-toggle.activo {
   background: var(--accent);
-  color: #1A1A1A;
+  color: var(--accent-text);
   border-color: var(--accent);
   font-weight: 700;
 }
@@ -346,7 +349,7 @@ textarea { min-height: 4.5rem; resize: vertical; }
   height: 3.5rem;
   border-radius: 50%;
   background: var(--accent);
-  color: #1A1A1A;
+  color: var(--accent-text);
   font-size: 1.75rem;
   line-height: 1;
   border: none;
@@ -363,12 +366,12 @@ textarea { min-height: 4.5rem; resize: vertical; }
 h3 { margin: 1.25rem 0 0.6rem; }
 
 .badge {
-  border-radius: 999px;
-  padding: 0.2rem 0.65rem;
+  border-radius: var(--radius-sm);
+  padding: 0.15rem 0.5rem;
   font-size: 0.75rem;
   font-weight: 700;
 }
-.badge.en_proceso { background: var(--accent); color: #1A1A1A; }
+.badge.en_proceso { background: var(--accent); color: var(--accent-text); }
 .badge.completado { background: #2E6B3E; color: #fff; }
 .badge.inactivo { background: var(--muted); color: #fff; }
 .badge.alerta { background: #C77E1E; color: #fff; }
@@ -392,7 +395,7 @@ h3 { margin: 1.25rem 0 0.6rem; }
 .linea {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   padding: 0.9rem 1rem 0.5rem;
   margin-bottom: 0.75rem;
 }
@@ -419,7 +422,7 @@ h3 { margin: 1.25rem 0 0.6rem; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   padding: 0.9rem 1rem 1rem;
   margin-bottom: 1rem;
 }
@@ -430,7 +433,7 @@ h3 { margin: 1.25rem 0 0.6rem; }
 .totales {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   padding: 0.9rem 1rem;
   margin-top: 1rem;
 }
@@ -475,7 +478,7 @@ h3 { margin: 1.25rem 0 0.6rem; }
 .kpi {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: var(--radius-md);
   padding: 0.75rem 0.9rem;
   font-size: 0.8rem;
   color: var(--muted);
@@ -584,7 +587,7 @@ td.num, th.num { text-align: right; }
 }
 .modal {
   background: var(--surface);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   padding: 1.2rem;
   width: 100%; max-width: 560px;
   max-height: 90vh; overflow-y: auto;
@@ -608,10 +611,8 @@ td.num, th.num { text-align: right; }
 .tl-motivo { font-style: italic; color: var(--secundario); margin: 0 0 0.2rem; }
 
 /* ============================================================
-   Piloto rediseño denso (SAP/Dynamics) -- solo Unidades por ahora.
-   Clases nuevas, deliberadamente aisladas de .tarjeta/.campo/.fab
-   globales para no cambiar otros módulos todavía. Si se aprueba el
-   piloto, esto se generaliza y estas clases dejan de ser "solo Unidades".
+   Rediseño denso (SAP/Dynamics) -- generalizado a toda la app
+   (piloto original: Unidades, ver auditoría 2026-08-24).
    ============================================================ */
 
 .toolbar-lista {
@@ -696,15 +697,6 @@ td.num, th.num { text-align: right; }
 .barra-acciones .btn-primario,
 .barra-acciones .btn-secundario,
 .barra-acciones .btn-completar { padding: var(--sp-2) var(--sp-3); font-size: var(--fs-md); }
-
-/* botón primario (Guardar/Agregar) más compacto, tono más claro y esquinas más cuadradas --
-   pedido puntual sobre el piloto de Unidades, iterando antes de tocar más */
-.barra-acciones .btn-primario,
-.toolbar-lista .btn-primario {
-  padding: var(--sp-1) var(--sp-3);
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--accent) 78%, white);
-}
 
 /* botones dentro de filas de tabla densa (Editar costos, Registrar pago, +factura/+XML...) --
    estaban heredando el tamaño de botón de formulario (padding grande, margin-top) y se veían
