@@ -1202,9 +1202,25 @@ function EditarCostosPO({ compra, usuario, onDone }) {
     if (calc.some((c) => !(c.costoUnitario > 0))) { alert('El costo unitario debe ser mayor a 0'); return }
     setGuardando(true)
     try {
+      const cambios = calc
+        .map((c, i) => ({ c, anterior: Number(g.conceptos[i].costoUnitario) || 0 }))
+        .filter(({ c, anterior }) => c.costoUnitario !== anterior)
       for (const c of calc) {
         const { error } = await supabase.from('compra_conceptos').update({ costo_unitario: c.costoUnitario }).eq('id', c.id)
         if (error) throw error
+      }
+      if (cambios.length > 0) {
+        const { error: errHist } = await supabase.from('compra_costo_historial').insert(
+          cambios.map(({ c, anterior }) => ({
+            compra_id: compra.id,
+            concepto_id: c.id,
+            concepto_texto: c.concepto,
+            costo_anterior: anterior,
+            costo_nuevo: c.costoUnitario,
+            modificado_por: usuario.id,
+          })),
+        )
+        if (errHist) throw errHist
       }
       const { error: errCompra } = await supabase.from('compras').update({
         subtotal, iva, total, total_usd: aUSD(total, g.moneda, compra.tipoCambioUsado),
@@ -1260,9 +1276,73 @@ function EditarCostosPO({ compra, usuario, onDone }) {
   )
 }
 
+const mapCostoHistorial = (h) => ({
+  id: h.id,
+  conceptoTexto: h.concepto_texto,
+  costoAnterior: Number(h.costo_anterior),
+  costoNuevo: Number(h.costo_nuevo),
+  modificadoPorEmail: h.perfiles?.email ?? '',
+  createdAt: h.created_at,
+})
+
+// detalle del cambio de costos de una PO marcada MODIFICADO -- qué concepto cambió de cuánto
+// a cuánto, quién y cuándo (compra_costo_historial, ver EditarCostosPO)
+function HistorialCostosModal({ compra, onDone }) {
+  const [historial, setHistorial] = useState(null)
+  const moneda = compra.grupos?.[0]?.moneda ?? 'USD'
+
+  useEffect(() => {
+    supabase.from('compra_costo_historial').select('*, perfiles(email)').eq('compra_id', compra.id).order('created_at')
+      .then(({ data, error }) => { if (!error) setHistorial(data.map(mapCostoHistorial)) })
+  }, [compra.id])
+
+  return (
+    <div className="modal-fondo" onClick={(e) => { if (e.target === e.currentTarget) onDone() }}>
+      <div className="modal">
+        <h3>Historial de cambios — {compra.poFolio || compra.fecha}</h3>
+        {historial === null && <p className="muted">Cargando…</p>}
+        {historial?.length === 0 && <p className="muted">Sin cambios registrados.</p>}
+        {historial?.length > 0 && (
+          <div className="tabla-scroll">
+            <table className="tabla-densa">
+              <thead>
+                <tr><th>Concepto</th><th className="num">Antes</th><th className="num">Después</th><th>Quién</th><th>Cuándo</th></tr>
+              </thead>
+              <tbody>
+                {historial.map((h) => (
+                  <tr key={h.id}>
+                    <td>{h.conceptoTexto}</td>
+                    <td className="num">{dinero(h.costoAnterior, moneda)}</td>
+                    <td className="num">{dinero(h.costoNuevo, moneda)}</td>
+                    <td className="muted">{h.modificadoPorEmail}</td>
+                    <td className="muted">{new Date(h.createdAt).toLocaleString('es-MX')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="acciones">
+          <button type="button" className="btn-secundario" onClick={onDone}>Cerrar</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// badge clicable: abre el detalle de qué costo cambió (compra_costo_historial)
+function BadgeModificado({ onClick }) {
+  return (
+    <button type="button" className="badge vencido" style={{ border: 'none', cursor: 'pointer' }} onClick={onClick}>
+      MODIFICADO
+    </button>
+  )
+}
+
 function CuentasPorPagar({ usuario }) {
   const [pagando, setPagando] = useState(null) // compra en proceso de pago
   const [editando, setEditando] = useState(null) // compra en edición de costos
+  const [verHistorial, setVerHistorial] = useState(null) // compra con el detalle MODIFICADO abierto
   const [comprobante, setComprobante] = useState(null)
   const [guardando, setGuardando] = useState(false)
   const compras = useTabla('compras', mapCompra, (q) => q.select(SELECT_COMPRA).eq('tipo_pago', 'credito'))
@@ -1363,7 +1443,7 @@ function CuentasPorPagar({ usuario }) {
                   <tr key={c.id}>
                     <td>
                       <strong>{c.poFolio || c.fecha}</strong>
-                      {c.modificado && <> <span className="badge vencido">MODIFICADO</span></>}
+                      {c.modificado && <> <BadgeModificado onClick={() => setVerHistorial(c)} /></>}
                     </td>
                     <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
                     <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
@@ -1397,7 +1477,7 @@ function CuentasPorPagar({ usuario }) {
                 <tr key={c.id}>
                   <td>
                     <strong>{c.poFolio || c.fecha}</strong>
-                    {c.modificado && <> <span className="badge vencido">MODIFICADO</span></>}
+                    {c.modificado && <> <BadgeModificado onClick={() => setVerHistorial(c)} /></>}
                   </td>
                   <td className="muted">{(c.grupos ?? []).map((g) => g.proveedor).join(', ')}</td>
                   <td className="muted">{c.fecha} · {c.esGeneral ? 'General' : `Unidad ${c.unidadNumero}`}</td>
@@ -1411,6 +1491,7 @@ function CuentasPorPagar({ usuario }) {
           </table>
         </div>
       )}
+      {verHistorial && <HistorialCostosModal compra={verHistorial} onDone={() => setVerHistorial(null)} />}
     </div>
   )
 }
