@@ -220,7 +220,8 @@ function OperadorForm({ operador, unidades, onDone }) {
       if (operador) {
         const { error } = await supabase.from('operadores').update(datos).eq('id', operador.id)
         if (error) throw error
-        await supabase.from('operador_contactos_emergencia').delete().eq('operador_id', operador.id)
+        const { error: errBorrar } = await supabase.from('operador_contactos_emergencia').delete().eq('operador_id', operador.id)
+        if (errBorrar) throw errBorrar
       } else {
         const { data, error } = await supabase.from('operadores').insert(datos).select('id').single()
         if (error) throw error

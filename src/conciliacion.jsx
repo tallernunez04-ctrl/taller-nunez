@@ -5,9 +5,10 @@ import { mapViaje, SELECT_VIAJE, useViajes } from './viajes'
 import { cargasEnRango } from './diesel'
 import { dinero, r2, hoy } from './utils/format'
 
-/* Conciliación gerencial. Los KPIs del mes salen de la vista v_balance_mensual
-   (1 lectura, calculada en vivo desde viajes/compras/nominas -- reemplaza el
-   agregado manual que vivía en Firestore); los cruces (auditoría de litros,
+/* Conciliación gerencial. Los KPIs del mes salen de obtener_balance_mensual(), RPC
+   security definer sobre v_balance_mensual que valida admin explícitamente (la vista
+   agrega TODA la empresa sin dueño de fila, así que no se expone directo -- ver
+   20260831150000_asegura_vistas_agregadas.sql); los cruces (auditoría de litros,
    rentabilidad) usan queries acotadas por rango de fecha — nunca el historial completo. */
 
 const mesActual = () => hoy().slice(0, 7)
@@ -33,7 +34,7 @@ export default function Conciliacion() {
   const [cargasMes, setCargasMes] = useState([])
 
   useEffect(() => {
-    supabase.from('v_balance_mensual').select('*').eq('mes', mes + '-01').maybeSingle()
+    supabase.rpc('obtener_balance_mensual', { p_mes: mes + '-01' }).maybeSingle()
       .then(({ data, error }) => { if (error) { console.error(error); return } setBalance(data ? mapBalance(data) : {}) })
   }, [mes])
 
