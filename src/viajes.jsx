@@ -275,8 +275,8 @@ function exportarReporteDashboardViajes(filas, filasDetalle, desde, hasta) {
       {
         nombre: 'Detalle por viaje',
         datos: [
-          ['Cliente', 'Viaje', 'Origen', 'Destino', 'Truck', 'Reefer', 'Ingreso (USD)', 'Costo (USD)', 'Margen (USD)'],
-          ...filasDetalle.map((f) => [f.cliente, f.folio, f.origen, f.destino, f.truck, f.reefer, f.ingreso, f.costo, f.margen]),
+          ['Cliente', 'Viaje', 'Origen', 'Destino', 'Truck', 'Reefer', 'Ingreso (USD)', 'Diésel (USD)', 'Chofer (USD)', 'Margen (USD)'],
+          ...filasDetalle.map((f) => [f.cliente, f.folio, f.origen, f.destino, f.truck, f.reefer, f.ingreso, f.diesel, f.chofer, f.margen]),
         ],
       },
     ],
@@ -319,7 +319,8 @@ function DashboardClientes() {
       truck: v.unidadNumero,
       reefer: v.cajaNumero || '—',
       ingreso: v.precio || 0,
-      costo: v.costeoEstimado.total || 0,
+      diesel: v.costeoEstimado.dieselUSD || 0,
+      chofer: v.costeoEstimado.pagoChofer || 0,
       margen: r2((v.precio || 0) - (v.costeoEstimado.total || 0)),
     }))
     .sort((a, b) => a.cliente.localeCompare(b.cliente) || (a.folio || '').localeCompare(b.folio || ''))
@@ -365,7 +366,7 @@ function DashboardClientes() {
               <tr>
                 <th>Cliente</th><th>Viaje</th><th>Origen</th><th>Destino</th>
                 <th>Truck</th><th>Reefer</th>
-                <th className="num">Ingreso</th><th className="num">Costo</th><th className="num">Margen</th>
+                <th className="num">Ingreso</th><th className="num">Diésel</th><th className="num">Chofer</th><th className="num">Margen</th>
               </tr>
             </thead>
             <tbody>
@@ -378,7 +379,8 @@ function DashboardClientes() {
                   <td>{f.truck}</td>
                   <td>{f.reefer}</td>
                   <td className="num">{dinero(f.ingreso, 'USD')}</td>
-                  <td className="num">{dinero(f.costo, 'USD')}</td>
+                  <td className="num">{dinero(f.diesel, 'USD')}</td>
+                  <td className="num">{dinero(f.chofer, 'USD')}</td>
                   <td className="num">{dinero(f.margen, 'USD')}</td>
                 </tr>
               ))}
@@ -392,8 +394,38 @@ function DashboardClientes() {
 
 /* ---------- Lista + formulario (dispatch/admin) ---------- */
 
+// disponibilidad de flota: qué unidades traen viaje activo vs. libres, para que el
+// despachador vea de un vistazo qué puede asignar (trucks y reefers son unidades separadas,
+// un viaje ocupa ambas si lleva caja)
+function PanelDisponibilidad({ unidades, viajes }) {
+  const enViaje = new Set(
+    (viajes ?? []).filter((v) => v.estatus === 'en_proceso').flatMap((v) => [v.unidadId, v.cajaId]).filter(Boolean)
+  )
+  const grupo = (titulo, lista) => {
+    if (lista.length === 0) return null
+    const libres = lista.filter((u) => !enViaje.has(u.id)).length
+    return (
+      <div>
+        <strong>{titulo}</strong> <span className="muted">({libres} libres de {lista.length})</span>
+        <div className="chips">
+          {lista.map((u) => (
+            <span key={u.id} className={'badge ' + (enViaje.has(u.id) ? 'en_proceso' : 'completado')}>{u.numero}</span>
+          ))}
+        </div>
+      </div>
+    )
+  }
+  return (
+    <div className="tarjeta panel-disponibilidad">
+      {grupo('Trucks', unidades.filter((u) => u.tipo === 'truck' && u.activo !== false))}
+      {grupo('Reefers', unidades.filter((u) => u.tipo === 'reefer' && u.activo !== false))}
+    </div>
+  )
+}
+
 function ListaViajes({ usuario }) {
   const viajes = useViajes()
+  const unidades = useUnidades()
   const [editando, setEditando] = useState(null) // viaje | 'nuevo' | null
   const [fEstatus, setFEstatus] = useState('en_proceso')
 
@@ -407,6 +439,7 @@ function ListaViajes({ usuario }) {
 
   return (
     <div>
+      <PanelDisponibilidad unidades={unidades} viajes={viajes} />
       <div className="toolbar-lista">
         <h2>Viajes</h2>
         <button type="button" className="btn-primario" onClick={() => setEditando('nuevo')}>+ Nuevo viaje</button>
@@ -525,7 +558,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const clientes = useClientes() ?? []
   const operadores = useOperadores() ?? []
   const tramos = useTabuladores() ?? []
-  const [rendMap, setRendMap] = useState({})
   const [f, setF] = useState(() => (viaje ? { ...viajeVacio(), ...viaje } : viajeVacio()))
   const [entregas, setEntregas] = useState([entregaVacia()]) // solo alta; en edición viven aparte
   const [cargas, setCargas] = useState([cargaVacia()]) // solo alta -- puntos de carga no se agregan después de creado el viaje
@@ -535,16 +567,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
   const [terminando, setTerminando] = useState(false)
   const [odometroFin, setOdometroFin] = useState('')
   const [guardando, setGuardando] = useState(false)
-
-  // mediana de rendimiento y de precio/litro por unidad -- ya no vive en el doc de la unidad (ver diesel.jsx)
-  useEffect(() => {
-    supabase.from('v_rendimiento_unidades').select('unidad_id, rendimiento_mediana, precio_litro_mediana').then(({ data, error }) => {
-      if (!error) setRendMap(Object.fromEntries(data.map((r) => [r.unidad_id, {
-        rendimiento: Number(r.rendimiento_mediana),
-        precioLitro: r.precio_litro_mediana != null ? Number(r.precio_litro_mediana) : null,
-      }])))
-    })
-  }, [])
 
   // historial de movimientos (cadena de custodia) del viaje existente
   useEffect(() => {
@@ -573,7 +595,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
 
   const movActivo = (movs ?? []).find((m) => m.activo) ?? null
   const camionActualId = viaje ? viaje.camionActualId : f.unidadId
-  const unidad = unidades.find((u) => u.id === camionActualId)
   const tramo = tramos.find((t) => t.id === f.tramoId)
   const operadorBase = operadores.find((o) => o.unidadBaseId === f.unidadId)
   const operador = operadores.find((o) => o.id === f.operadorId)
@@ -585,20 +606,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
   }
 
   const elegirTramo = (e) => setF({ ...f, tramoId: e.target.value })
-
-  // costeo estimado: diésel (km / mediana de rendimientos × $/L, a USD) + pago chofer del tabulador.
-  // el km ya no se captura a mano aquí -- lo anota el chofer (Km inicial/final) en Mis viajes,
-  // así que antes de que el viaje arranque el estimado de diésel simplemente es $0.
-  const km = viaje?.kmTotales ?? 0
-  const rendUnidad = rendMap[camionActualId]
-  const rendimiento = rendUnidad?.rendimiento ?? 0
-  // precio real pagado por esta unidad (mediana de sus últimas cargas) -- sin historial
-  // propio el estimado de diésel simplemente es $0 hasta que la unidad tenga cargas registradas
-  const precioLitro = rendUnidad?.precioLitro || 0
-  const costoDieselMXN = rendimiento > 0 ? r2((km / rendimiento) * precioLitro) : 0
-  const costoDieselUSD = tc ? r2(costoDieselMXN / tc) : 0
-  const pagoChofer = tramo?.pagoChofer || 0
-  const costeoTotal = r2(costoDieselUSD + pagoChofer)
 
   const guardar = async () => {
     const entregasValidas = entregas.filter((e) => e.clienteId && e.direccionEntregaId)
@@ -618,8 +625,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
           origen: tramo?.origen ?? viaje.origen ?? '',
           destino: tramo?.destino ?? viaje.destino ?? '',
           precio: Number(f.precio) || 0,
-          costeo_diesel_usd: costoDieselUSD, costeo_pago_chofer: pagoChofer, costeo_total: costeoTotal,
-          tipo_cambio_usado: tc,
           viaticos_entregados: Number(f.viaticosEntregados) || 0,
           viaticos_comprobados: Number(f.viaticosComprobados) || 0,
           notas: f.notas || null,
@@ -645,8 +650,10 @@ function ViajeForm({ viaje, usuario, onDone }) {
         const { error } = await supabase.rpc('crear_viaje', {
           p_fecha: f.fecha, p_tramo_id: f.tramoId || null,
           p_origen: tramo?.origen ?? '', p_destino: tramo?.destino ?? '',
-          p_km: km, p_precio: Number(f.precio) || 0,
-          p_costeo_diesel_usd: costoDieselUSD, p_costeo_pago_chofer: pagoChofer, p_costeo_total: costeoTotal,
+          p_km: 0, p_precio: Number(f.precio) || 0,
+          // diésel se calcula hasta cerrar el viaje (terminar_viaje), con el km real recorrido;
+          // el pago al chofer sí se conoce desde ahora, es fijo por tramo (tabulador)
+          p_costeo_diesel_usd: 0, p_costeo_pago_chofer: tramo?.pagoChofer || 0, p_costeo_total: tramo?.pagoChofer || 0,
           p_tipo_cambio_usado: tc,
           p_viaticos_entregados: Number(f.viaticosEntregados) || 0, p_notas: f.notas || null,
           p_chofer_id: operador.id, p_camion_id: f.unidadId, p_caja_id: f.cajaId || null,
@@ -855,14 +862,6 @@ function ViajeForm({ viaje, usuario, onDone }) {
           editable={enProceso && !soloLectura}
         />
       )}
-
-      <div className="totales">
-        <div><span className="muted">Diésel estimado ({km} km / {rendimiento || '—'} km/L mediana × ${precioLitro}/L)</span><span>{rendimiento ? dinero(costoDieselUSD, 'USD') : '— (sin datos)'}</span></div>
-        <div><span className="muted">Pago al chofer (tabulador)</span><span>{dinero(pagoChofer, 'USD')}</span></div>
-        <div className="total-grande"><span>COSTEO ESTIMADO</span><span>{dinero(costeoTotal, 'USD')}</span></div>
-      </div>
-      {!precioLitro && <p className="error">Configura el precio del diésel en el Dashboard para estimar el costeo.</p>}
-      {unidad && !rendimiento && <p className="muted tc-nota">La unidad aún no tiene rendimientos registrados (se calculan con las cargas de diésel).</p>}
 
       {viaje && <MovimientosTimeline movs={movs} />}
 
